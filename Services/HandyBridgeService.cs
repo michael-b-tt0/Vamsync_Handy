@@ -6,6 +6,7 @@ namespace Vamsync.Services;
 
 public sealed class HandyBridgeService : IAsyncDisposable
 {
+    private static readonly TimeSpan MinimumCommandInterval = TimeSpan.FromMilliseconds(167);
     private readonly IHandyService _handyService;
     private readonly UdpMotionListener _udpMotionListener;
     private readonly AppState _appState;
@@ -13,9 +14,9 @@ public sealed class HandyBridgeService : IAsyncDisposable
     private readonly SemaphoreSlim _motionLock = new(1, 1);
 
     private bool _subscribed;
-    private bool _hampStarted;
-    private double? _lastVelocity;
-    private double? _lastStrokeCenter;
+    private DateTimeOffset _lastHdspCommandAt = DateTimeOffset.MinValue;
+    private double? _lastPercentPosition;
+    private double? _lastDurationMilliseconds;
 
     public HandyBridgeService(
         IHandyService handyService,
@@ -79,22 +80,9 @@ public sealed class HandyBridgeService : IAsyncDisposable
     {
         await _udpMotionListener.StopAsync();
         _appState.SetMappingStatus("Stopped");
-
-        if (_hampStarted)
-        {
-            try
-            {
-                await _handyService.StopHampAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to stop HAMP while shutting down.");
-            }
-        }
-
-        _hampStarted = false;
-        _lastVelocity = null;
-        _lastStrokeCenter = null;
+        _lastHdspCommandAt = DateTimeOffset.MinValue;
+        _lastPercentPosition = null;
+        _lastDurationMilliseconds = null;
     }
 
     private async void OnMotionReceived(object? sender, MotionSnapshot snapshot)
@@ -128,46 +116,68 @@ public sealed class HandyBridgeService : IAsyncDisposable
 
         _appState.SetError(null);
 
-        var velocity = Math.Clamp(snapshot.NormalizedSpeed, 0d, 1d);
-        var center = Math.Clamp(snapshot.NormalizedPosition, 0d, 1d);
+        var percentPosition = Math.Clamp(snapshot.Position / 99d * 100d, 0d, 100d);
+        var durationMilliseconds = ResolveDurationMilliseconds(snapshot);
+        var stopOnTarget = snapshot.Speed <= 2;
+        var now = DateTimeOffset.UtcNow;
 
-        if (velocity <= 0.02d)
+        if (!ShouldSendCommand(now, percentPosition, durationMilliseconds, stopOnTarget))
         {
-            if (_hampStarted)
-            {
-                await _handyService.StopHampAsync();
-                _hampStarted = false;
-                _appState.AddLog("Stopped HAMP due to near-zero incoming speed.");
-            }
-
-            _appState.SetMappingStatus($"Paused at {center:P0}");
+            _appState.SetMappingStatus(
+                $"Holding latest VaM motion: pos {percentPosition:F1}%, duration {durationMilliseconds:F0}ms");
             return;
         }
 
-        if (!_hampStarted)
-        {
-            await _handyService.StartHampAsync();
-            _hampStarted = true;
-            _appState.AddLog("Started HAMP mode.");
-        }
+        await _handyService.SendHdspXptAsync(
+            percentPosition: percentPosition,
+            duration: durationMilliseconds,
+            stopOnTarget: stopOnTarget,
+            immediateResponse: true);
 
-        if (_lastStrokeCenter is null || Math.Abs(center - _lastStrokeCenter.Value) >= 0.015d)
-        {
-            const double halfWindow = 0.01d;
-            var min = Math.Clamp(center - halfWindow, 0d, 1d);
-            var max = Math.Clamp(center + halfWindow, 0d, 1d);
-            await _handyService.SetSliderStrokeAsync(min, max);
-            _lastStrokeCenter = center;
-        }
-
-        if (_lastVelocity is null || Math.Abs(velocity - _lastVelocity.Value) >= 0.02d)
-        {
-            await _handyService.SetHampVelocityAsync(velocity);
-            _lastVelocity = velocity;
-        }
+        _lastHdspCommandAt = now;
+        _lastPercentPosition = percentPosition;
+        _lastDurationMilliseconds = durationMilliseconds;
 
         _appState.SetMappingStatus(
-            $"Mapped VaM motion to Handy HAMP: pos {center:P0}, speed {velocity:P0}, duration {snapshot.DurationSeconds:F3}s");
+            $"Mapped VaM motion to Handy HDSP XPT: pos {percentPosition:F1}%, duration {durationMilliseconds:F0}ms");
+    }
+
+    private bool ShouldSendCommand(
+        DateTimeOffset now,
+        double percentPosition,
+        double durationMilliseconds,
+        bool stopOnTarget)
+    {
+        if (_lastPercentPosition is null || _lastDurationMilliseconds is null)
+        {
+            return true;
+        }
+
+        var enoughTimeElapsed = now - _lastHdspCommandAt >= MinimumCommandInterval;
+        var positionDelta = Math.Abs(percentPosition - _lastPercentPosition.Value);
+        var durationDelta = Math.Abs(durationMilliseconds - _lastDurationMilliseconds.Value);
+
+        if (stopOnTarget && positionDelta >= 0.5d)
+        {
+            return true;
+        }
+
+        if (!enoughTimeElapsed)
+        {
+            return false;
+        }
+
+        return positionDelta >= 1d || durationDelta >= 15d;
+    }
+
+    private static double ResolveDurationMilliseconds(MotionSnapshot snapshot)
+    {
+        if (!float.IsFinite(snapshot.DurationSeconds) || snapshot.DurationSeconds <= 0f)
+        {
+            return 1d;
+        }
+
+        return Math.Max(1d, snapshot.DurationSeconds * 1000d);
     }
 
     public async ValueTask DisposeAsync()
