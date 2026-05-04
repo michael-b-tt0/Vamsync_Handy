@@ -7,14 +7,21 @@ namespace Vamsync.Services;
 public sealed class HandyBridgeService : IAsyncDisposable
 {
     private static readonly TimeSpan MinimumCommandInterval = TimeSpan.FromMilliseconds(167);
+    private static readonly TimeSpan MinimumConnectionStatusCheckInterval = TimeSpan.FromSeconds(2);
+    private const double MinimumDurationMilliseconds = 167d;
     private readonly IHandyService _handyService;
     private readonly UdpMotionListener _udpMotionListener;
     private readonly AppState _appState;
     private readonly ILogger<HandyBridgeService> _logger;
-    private readonly SemaphoreSlim _motionLock = new(1, 1);
+    private readonly Lock _pendingMotionLock = new();
+    private readonly Lock _connectionStatusLock = new();
 
     private bool _subscribed;
+    private bool _processingMotion;
+    private bool _checkingConnectionStatus;
+    private MotionSnapshot? _pendingMotion;
     private DateTimeOffset _lastHdspCommandAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastConnectionStatusCheckAt = DateTimeOffset.MinValue;
     private double? _lastPercentPosition;
     private double? _lastDurationMilliseconds;
 
@@ -86,22 +93,56 @@ public sealed class HandyBridgeService : IAsyncDisposable
         _lastDurationMilliseconds = null;
     }
 
-    private async void OnMotionReceived(object? sender, MotionSnapshot snapshot)
+    private void OnMotionReceived(object? sender, MotionSnapshot snapshot)
     {
-        await _motionLock.WaitAsync();
-        try
+        var shouldStartProcessor = false;
+
+        lock (_pendingMotionLock)
         {
-            await HandleMotionAsync(snapshot);
+            // Keep only the most recent motion packet so bursts do not build a stale queue.
+            _pendingMotion = snapshot;
+            if (!_processingMotion)
+            {
+                _processingMotion = true;
+                shouldStartProcessor = true;
+            }
         }
-        catch (Exception ex)
+
+        if (shouldStartProcessor)
         {
-            _logger.LogError(ex, "Failed to map motion snapshot to Handy commands.");
-            _appState.SetError(ex.Message);
-            _appState.AddLog($"Motion mapping failed: {ex.Message}");
+            _ = ProcessPendingMotionAsync();
         }
-        finally
+    }
+
+    private async Task ProcessPendingMotionAsync()
+    {
+        while (true)
         {
-            _motionLock.Release();
+            MotionSnapshot? snapshot;
+
+            lock (_pendingMotionLock)
+            {
+                snapshot = _pendingMotion;
+                _pendingMotion = null;
+
+                if (snapshot is null)
+                {
+                    _processingMotion = false;
+                    return;
+                }
+            }
+
+            try
+            {
+                await HandleMotionAsync(snapshot);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to map motion snapshot to Handy commands.");
+                await CheckHandyConnectionStatusOnTimeoutAsync(ex);
+                _appState.SetError(ex.Message);
+                _appState.AddLog($"Motion mapping failed: {ex.Message}");
+            }
         }
     }
 
@@ -175,11 +216,74 @@ public sealed class HandyBridgeService : IAsyncDisposable
     {
         if (!float.IsFinite(snapshot.DurationSeconds) || snapshot.DurationSeconds <= 0f)
         {
-            return 1d;
+            return MinimumDurationMilliseconds;
         }
 
-        return Math.Max(1d, snapshot.DurationSeconds * 1000d);
+        return Math.Max(MinimumDurationMilliseconds, snapshot.DurationSeconds * 1000d);
     }
+
+    private async Task CheckHandyConnectionStatusOnTimeoutAsync(Exception ex)
+    {
+        if (!IsDeviceTimeout(ex))
+        {
+            return;
+        }
+
+        var shouldCheckStatus = false;
+        var now = DateTimeOffset.UtcNow;
+
+        lock (_connectionStatusLock)
+        {
+            if (!_checkingConnectionStatus && now - _lastConnectionStatusCheckAt >= MinimumConnectionStatusCheckInterval)
+            {
+                _checkingConnectionStatus = true;
+                _lastConnectionStatusCheckAt = now;
+                shouldCheckStatus = true;
+            }
+        }
+
+        if (!shouldCheckStatus)
+        {
+            return;
+        }
+
+        try
+        {
+            _appState.AddLog("Handy API reported device timeout. Checking connection status...");
+
+            var connected = await _handyService.GetConnectedAsync();
+            if (!connected)
+            {
+                _appState.SetHandyStatus(false, "Disconnected");
+                _appState.SetMappingStatus("Handy device timeout");
+                _appState.AddLog("Handy connection check failed after device timeout.");
+                return;
+            }
+
+            var info = await _handyService.GetInfoAsync();
+            _appState.SetHandyStatus(
+                connected: true,
+                status: "Connected",
+                deviceInfo: $"{info.HardwareModelName ?? "Handy"} / FW {info.FirmwareVersion ?? "unknown"}");
+            _appState.AddLog("Handy connection check succeeded after device timeout.");
+        }
+        catch (Exception statusEx)
+        {
+            _logger.LogWarning(statusEx, "Failed to refresh Handy connection status after device timeout.");
+            _appState.SetHandyStatus(false, "Connection check failed");
+            _appState.AddLog($"Handy connection check failed after device timeout: {statusEx.Message}");
+        }
+        finally
+        {
+            lock (_connectionStatusLock)
+            {
+                _checkingConnectionStatus = false;
+            }
+        }
+    }
+
+    private static bool IsDeviceTimeout(Exception ex) =>
+        ex.Message.Contains("Device timeout", StringComparison.OrdinalIgnoreCase);
 
     public async ValueTask DisposeAsync()
     {
@@ -190,6 +294,5 @@ public sealed class HandyBridgeService : IAsyncDisposable
         }
 
         await StopAsync();
-        _motionLock.Dispose();
     }
 }
