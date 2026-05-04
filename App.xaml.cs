@@ -9,7 +9,20 @@
 
         protected override Window CreateWindow(IActivationState? activationState)
             {
-            return new Window(new MainPage()) { Title = "Vamsync" };
+            var win = new Window(new MainPage());
+                win.TitleBar = new TitleBar
+    {
+        Title = "Vamsync Handy",
+
+       
+    };
+
+    return win;
+}
+
+
+
+
             }
         }
-    }
+    

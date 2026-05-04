@@ -3,78 +3,207 @@
 @inject Vamsync.Services.AppState AppState
 @inject Vamsync.Services.HandyBridgeService Bridge
 
-<PageTitle>VaMSync Replacement</PageTitle>
+<PageTitle>VaMSync</PageTitle>
 
 <div class="shell">
-    <h1>VaMSync Replacement</h1>
-    <p class="lede">
-        This app keeps the original VaM UDP contract in place and replaces the old Buttplug desktop bridge with a Handy-only runtime.
-    </p>
+    @* ── Header ──────────────────────────────────────── *@
+    <header class="header">
+        <div class="header-title-group">
+            <h1 class="title">
+                <span class="title-icon">⚡</span>
+                VaMSync
+            </h1>
+            <p class="subtitle">
+                Real-time VaM UDP motion bridge for Handy devices
+            </p>
+        </div>
+        <div class="header-badges">
+            <FluentBadge Appearance="Appearance.Neutral"
+                         class="version-badge">
+                v1.0
+            </FluentBadge>
+        </div>
+    </header>
 
-    <div class="grid">
-        <section class="panel stack">
-            <h2>Handy Connection</h2>
+    @* ── Top Row: Three Status Panels ────────────────── *@
+    <FluentGrid Spacing="3" Justify="JustifyContent.FlexStart" Class="top-grid">
 
-            <div>
-                <label class="field-label" for="connectionKey">Connection key</label>
-                <input id="connectionKey" class="field" @bind="_connectionKey" @bind:event="oninput" placeholder="Paste your Handy connection key" />
-            </div>
+        @* ── Handy Connection Panel ──────────────────── *@
+        <FluentGridItem xs="12" md="4">
+            <FluentCard Class="panel-card connection-card">
+                <div class="card-header">
+                    <span class="card-icon">🔗</span>
+                    <h2 class="card-title">Handy Connection</h2>
+                    <FluentBadge Appearance="@(AppState.HandyConnected ? Appearance.Accent : Appearance.Neutral)"
+                                 Class="status-dot">
+                        @(AppState.HandyConnected ? "Connected" : "Offline")
+                    </FluentBadge>
+                </div>
 
-            <div class="actions">
-                <button class="button" @onclick="VerifyConnectionAsync" disabled="@_busy">Connect Handy</button>
-                <button class="button secondary" @onclick="StartBridgeAsync" disabled="@_busy">Start Listener</button>
-                <button class="button warn" @onclick="StopBridgeAsync" disabled="@_busy">Stop Listener</button>
-                <button class="button secondary" @onclick="ClearConnectionAsync" disabled="@_busy">Clear Key</button>
-            </div>
+                <div class="card-body connection-body">
+                    <FluentTextField @bind-Value="_connectionKey"
+                                     Placeholder="Paste your Handy connection key"
+                                     Label="Connection Key"
+                                     Class="connection-input"
+                                     Immediate="true" />
 
-            @if (!string.IsNullOrWhiteSpace(AppState.LastError))
+                    <div class="button-row">
+                        <FluentButton Appearance="Appearance.Accent"
+                                      OnClick="VerifyConnectionAsync"
+                                      Disabled="_busy"
+                                      Class="action-btn">
+                            Connect
+                        </FluentButton>
+                        <FluentButton Appearance="Appearance.Neutral"
+                                      OnClick="StartBridgeAsync"
+                                      Disabled="_busy"
+                                      Class="action-btn">
+                            Start
+                        </FluentButton>
+                        <FluentButton Appearance="Appearance.Neutral"
+                                      OnClick="StopBridgeAsync"
+                                      Disabled="_busy"
+                                      Class="action-btn warn-btn">
+                            Stop
+                        </FluentButton>
+                        <FluentButton Appearance="Appearance.Stealth"
+                                      OnClick="ClearConnectionAsync"
+                                      Disabled="_busy"
+                                      Class="action-btn">
+                            Clear
+                        </FluentButton>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(AppState.LastError))
+                    {
+                        <div class="error-banner">
+                            <span class="error-icon">⚠</span>
+                            @AppState.LastError
+                        </div>
+                    }
+                </div>
+            </FluentCard>
+        </FluentGridItem>
+
+        @* ── Runtime Status Panel ────────────────────── *@
+        <FluentGridItem xs="12" md="4">
+            <FluentCard Class="panel-card status-card">
+                <div class="card-header">
+                    <span class="card-icon">📊</span>
+                    <h2 class="card-title">Runtime Status</h2>
+                    <FluentBadge Appearance="@(AppState.IsListening ? Appearance.Accent : Appearance.Neutral)"
+                                 Class="status-dot">
+                        @(AppState.IsListening ? "Active" : "Idle")
+                    </FluentBadge>
+                </div>
+
+                <div class="card-body">
+                    <div class="stat-grid">
+                        <div class="stat-row">
+                            <span class="stat-label">Listener</span>
+                            <span class="stat-value">@AppState.ListenerStatus</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Handy</span>
+                            <span class="stat-value @(AppState.HandyConnected ? "val-accent" : "")">@AppState.HandyStatus</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Device</span>
+                            <span class="stat-value">@AppState.DeviceInfo</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Mapping</span>
+                            <span class="stat-value">@AppState.MappingStatus</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">UDP Rate</span>
+                            <span class="stat-value stat-mono">@AppState.UdpPacketsPerSecond <span class="stat-unit">pkt/s</span></span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Total Packets</span>
+                            <span class="stat-value stat-mono">@AppState.TotalUdpPacketsReceived.ToString("N0")</span>
+                        </div>
+                    </div>
+                </div>
+            </FluentCard>
+        </FluentGridItem>
+
+        @* ── Latest Motion Panel ─────────────────────── *@
+        <FluentGridItem xs="12" md="4">
+            <FluentCard Class="panel-card motion-card">
+                <div class="card-header">
+                    <span class="card-icon">🎯</span>
+                    <h2 class="card-title">Latest Motion</h2>
+                    <FluentBadge Appearance="@(AppState.LatestMotion is not null ? Appearance.Accent : Appearance.Neutral)"
+                                 Class="status-dot">
+                        @(AppState.LatestMotion is not null ? "Live" : "Waiting")
+                    </FluentBadge>
+                </div>
+
+                <div class="card-body">
+                    @if (AppState.LatestMotion is { } motion)
+                    {
+                        <div class="stat-grid">
+                            <div class="stat-row">
+                                <span class="stat-label">Position</span>
+                                <span class="stat-value stat-mono">@motion.Position <span class="stat-unit">(@motion.NormalizedPosition.ToString("P0"))</span></span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Speed</span>
+                                <span class="stat-value stat-mono">@motion.Speed <span class="stat-unit">(@motion.NormalizedSpeed.ToString("P0"))</span></span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Duration</span>
+                                <span class="stat-value stat-mono">@motion.DurationSeconds.ToString("F3")<span class="stat-unit">s</span></span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Received</span>
+                                <span class="stat-value stat-mono">@motion.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff")</span>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="empty-state">
+                            <span class="empty-icon">📡</span>
+                            <p>Waiting for VaM motion packets…</p>
+                        </div>
+                    }
+                </div>
+            </FluentCard>
+        </FluentGridItem>
+    </FluentGrid>
+
+    @* ── Bottom: Activity Log ────────────────────────── *@
+    <FluentCard Class="panel-card log-card">
+        <div class="card-header">
+            <span class="card-icon">📋</span>
+            <h2 class="card-title">Activity Log</h2>
+            <FluentBadge Appearance="Appearance.Neutral" Class="log-count-badge">
+                @AppState.Logs.Count entries
+            </FluentBadge>
+        </div>
+
+        <div class="log-scroll">
+            @if (AppState.Logs.Count == 0)
             {
-                <div class="error">@AppState.LastError</div>
-            }
-        </section>
-
-        <section class="panel">
-            <h2>Runtime Status</h2>
-            <div class="status-list">
-                <div class="status-line"><span class="muted">Listener</span><strong>@AppState.ListenerStatus</strong></div>
-                <div class="status-line"><span class="muted">Handy</span><strong>@AppState.HandyStatus</strong></div>
-                <div class="status-line"><span class="muted">Device</span><strong>@AppState.DeviceInfo</strong></div>
-                <div class="status-line"><span class="muted">Mapping</span><strong>@AppState.MappingStatus</strong></div>
-                <div class="status-line"><span class="muted">UDP pickup rate</span><strong>@AppState.UdpPacketsPerSecond pkt/s</strong></div>
-                <div class="status-line"><span class="muted">UDP packets total</span><strong>@AppState.TotalUdpPacketsReceived</strong></div>
-            </div>
-        </section>
-
-        <section class="panel">
-            <h2>Latest Motion</h2>
-            @if (AppState.LatestMotion is { } motion)
-            {
-                <div class="status-list">
-                    <div class="status-line"><span class="muted">Position</span><strong>@motion.Position (@motion.NormalizedPosition.ToString("P0"))</strong></div>
-                    <div class="status-line"><span class="muted">Speed</span><strong>@motion.Speed (@motion.NormalizedSpeed.ToString("P0"))</strong></div>
-                    <div class="status-line"><span class="muted">Duration</span><strong>@motion.DurationSeconds.ToString("F3")s</strong></div>
-                    <div class="status-line"><span class="muted">Received</span><strong>@motion.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff")</strong></div>
+                <div class="empty-state">
+                    <span class="empty-icon">📝</span>
+                    <p>No activity yet — connect your Handy to get started.</p>
                 </div>
             }
             else
             {
-                <p class="muted">No VaM packets received yet.</p>
-            }
-        </section>
-
-        <section class="panel">
-            <h2>Activity Log</h2>
-            <div class="log-list">
                 @foreach (var entry in AppState.Logs)
                 {
-                    <div class="log-item">
-                        <time>@entry.Timestamp.ToLocalTime().ToString("HH:mm:ss")</time>
-                        <div>@entry.Message</div>
+                    <div class="log-entry">
+                        <time class="log-time">@entry.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</time>
+                        <span class="log-msg">@entry.Message</span>
                     </div>
                 }
-            </div>
-        </section>
-    </div>
+            }
+        </div>
+    </FluentCard>
 </div>
 
 @code {
