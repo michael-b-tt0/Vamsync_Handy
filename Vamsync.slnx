@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Vamsync.csproj" />
+   <Project Path="../../../class librarys/handyapiv3/handyapiv3.csproj" />
+</Solution>

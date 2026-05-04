@@ -1,0 +1,155 @@
+@page "/"
+@implements IDisposable
+@inject Vamsync.Services.AppState AppState
+@inject Vamsync.Services.HandyBridgeService Bridge
+
+<PageTitle>VaMSync Replacement</PageTitle>
+
+<div class="shell">
+    <h1>VaMSync Replacement</h1>
+    <p class="lede">
+        This app keeps the original VaM UDP contract in place and replaces the old Buttplug desktop bridge with a Handy-only runtime.
+    </p>
+
+    <div class="grid">
+        <section class="panel stack">
+            <h2>Handy Connection</h2>
+
+            <div>
+                <label class="field-label" for="connectionKey">Connection key</label>
+                <input id="connectionKey" class="field" @bind="_connectionKey" @bind:event="oninput" placeholder="Paste your Handy connection key" />
+            </div>
+
+            <div class="actions">
+                <button class="button" @onclick="VerifyConnectionAsync" disabled="@_busy">Verify Handy</button>
+                <button class="button secondary" @onclick="StartBridgeAsync" disabled="@_busy">Start Listener</button>
+                <button class="button warn" @onclick="StopBridgeAsync" disabled="@_busy">Stop Listener</button>
+                <button class="button secondary" @onclick="ClearConnectionAsync" disabled="@_busy">Clear Key</button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(AppState.LastError))
+            {
+                <div class="error">@AppState.LastError</div>
+            }
+        </section>
+
+        <section class="panel">
+            <h2>Runtime Status</h2>
+            <div class="status-list">
+                <div class="status-line"><span class="muted">Listener</span><strong>@AppState.ListenerStatus</strong></div>
+                <div class="status-line"><span class="muted">Handy</span><strong>@AppState.HandyStatus</strong></div>
+                <div class="status-line"><span class="muted">Device</span><strong>@AppState.DeviceInfo</strong></div>
+                <div class="status-line"><span class="muted">Mapping</span><strong>@AppState.MappingStatus</strong></div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Latest Motion</h2>
+            @if (AppState.LatestMotion is { } motion)
+            {
+                <div class="status-list">
+                    <div class="status-line"><span class="muted">Position</span><strong>@motion.Position (@motion.NormalizedPosition.ToString("P0"))</strong></div>
+                    <div class="status-line"><span class="muted">Speed</span><strong>@motion.Speed (@motion.NormalizedSpeed.ToString("P0"))</strong></div>
+                    <div class="status-line"><span class="muted">Duration</span><strong>@motion.DurationSeconds.ToString("F3")s</strong></div>
+                    <div class="status-line"><span class="muted">Received</span><strong>@motion.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff")</strong></div>
+                </div>
+            }
+            else
+            {
+                <p class="muted">No VaM packets received yet.</p>
+            }
+        </section>
+
+        <section class="panel">
+            <h2>Activity Log</h2>
+            <div class="log-list">
+                @foreach (var entry in AppState.Logs)
+                {
+                    <div class="log-item">
+                        <time>@entry.Timestamp.ToLocalTime().ToString("HH:mm:ss")</time>
+                        <div>@entry.Message</div>
+                    </div>
+                }
+            </div>
+        </section>
+    </div>
+</div>
+
+@code {
+    private bool _busy;
+    private string _connectionKey = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _connectionKey = Preferences.Default.Get("handy_connection_key", AppState.ConnectionKey);
+        if (!string.IsNullOrWhiteSpace(_connectionKey) && string.IsNullOrWhiteSpace(AppState.ConnectionKey))
+        {
+            AppState.SetConnectionKey(_connectionKey);
+        }
+
+        AppState.Changed += OnAppStateChanged;
+    }
+
+    private async Task VerifyConnectionAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            await Bridge.ApplyConnectionKeyAsync(_connectionKey);
+            Preferences.Default.Set("handy_connection_key", _connectionKey);
+        });
+    }
+
+    private async Task StartBridgeAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            if (!string.IsNullOrWhiteSpace(_connectionKey) && _connectionKey != AppState.ConnectionKey)
+            {
+                await Bridge.ApplyConnectionKeyAsync(_connectionKey);
+                Preferences.Default.Set("handy_connection_key", _connectionKey);
+            }
+
+            await Bridge.StartAsync();
+        });
+    }
+
+    private async Task StopBridgeAsync()
+    {
+        await RunBusyAsync(() => Bridge.StopAsync());
+    }
+
+    private async Task ClearConnectionAsync()
+    {
+        await RunBusyAsync(() =>
+        {
+            Bridge.ClearConnectionKey();
+            _connectionKey = string.Empty;
+            Preferences.Default.Remove("handy_connection_key");
+            return Task.CompletedTask;
+        });
+    }
+
+    private async Task RunBusyAsync(Func<Task> work)
+    {
+        _busy = true;
+        try
+        {
+            await work();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void OnAppStateChanged(object? sender, EventArgs e)
+    {
+        _connectionKey = AppState.ConnectionKey;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        AppState.Changed -= OnAppStateChanged;
+    }
+}
