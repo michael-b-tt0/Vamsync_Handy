@@ -21,7 +21,7 @@
             </div>
 
             <div class="actions">
-                <button class="button" @onclick="VerifyConnectionAsync" disabled="@_busy">Verify Handy</button>
+                <button class="button" @onclick="VerifyConnectionAsync" disabled="@_busy">Connect Handy</button>
                 <button class="button secondary" @onclick="StartBridgeAsync" disabled="@_busy">Start Listener</button>
                 <button class="button warn" @onclick="StopBridgeAsync" disabled="@_busy">Stop Listener</button>
                 <button class="button secondary" @onclick="ClearConnectionAsync" disabled="@_busy">Clear Key</button>
@@ -40,6 +40,8 @@
                 <div class="status-line"><span class="muted">Handy</span><strong>@AppState.HandyStatus</strong></div>
                 <div class="status-line"><span class="muted">Device</span><strong>@AppState.DeviceInfo</strong></div>
                 <div class="status-line"><span class="muted">Mapping</span><strong>@AppState.MappingStatus</strong></div>
+                <div class="status-line"><span class="muted">UDP pickup rate</span><strong>@AppState.UdpPacketsPerSecond pkt/s</strong></div>
+                <div class="status-line"><span class="muted">UDP packets total</span><strong>@AppState.TotalUdpPacketsReceived</strong></div>
             </div>
         </section>
 
@@ -94,8 +96,11 @@
     {
         await RunBusyAsync(async () =>
         {
-            await Bridge.ApplyConnectionKeyAsync(_connectionKey);
-            Preferences.Default.Set("handy_connection_key", _connectionKey);
+            var connected = await Bridge.ApplyConnectionKeyAsync(_connectionKey);
+            if (connected)
+            {
+                Preferences.Default.Set("handy_connection_key", _connectionKey);
+            }
         });
     }
 
@@ -105,7 +110,12 @@
         {
             if (!string.IsNullOrWhiteSpace(_connectionKey) && _connectionKey != AppState.ConnectionKey)
             {
-                await Bridge.ApplyConnectionKeyAsync(_connectionKey);
+                var connected = await Bridge.ApplyConnectionKeyAsync(_connectionKey);
+                if (!connected)
+                {
+                    return;
+                }
+
                 Preferences.Default.Set("handy_connection_key", _connectionKey);
             }
 

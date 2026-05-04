@@ -3,6 +3,7 @@ using handyapiv3.Abstractions;
 using handyapiv3.Services;
 using Microsoft.Extensions.Logging;
 using Vamsync.Services;
+using Microsoft.FluentUI.AspNetCore.Components;
 
 namespace Vamsync
 {
@@ -19,6 +20,8 @@ namespace Vamsync
                 });
 
             builder.Services.AddMauiBlazorWebView();
+            builder.Services.AddFluentUIComponents();
+
 
 #if DEBUG
             builder.Services.AddBlazorWebViewDeveloperTools();

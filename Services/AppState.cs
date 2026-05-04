@@ -28,6 +28,10 @@ public sealed class AppState
 
     public MotionSnapshot? LatestMotion { get; private set; }
 
+    public int UdpPacketsPerSecond { get; private set; }
+
+    public long TotalUdpPacketsReceived { get; private set; }
+
     public IReadOnlyList<AppLogEntry> Logs
     {
         get
@@ -76,6 +80,13 @@ public sealed class AppState
         NotifyChanged();
     }
 
+    public void SetUdpPacketStats(int packetsPerSecond, long totalUdpPacketsReceived)
+    {
+        UdpPacketsPerSecond = packetsPerSecond;
+        TotalUdpPacketsReceived = totalUdpPacketsReceived;
+        NotifyChanged();
+    }
+
     public void SetError(string? error)
     {
         LastError = error?.Trim() ?? string.Empty;
@@ -98,6 +109,13 @@ public sealed class AppState
             }
         }
 
+        NotifyChanged();
+    }
+
+    public void ResetUdpPacketStats()
+    {
+        UdpPacketsPerSecond = 0;
+        TotalUdpPacketsReceived = 0;
         NotifyChanged();
     }
 

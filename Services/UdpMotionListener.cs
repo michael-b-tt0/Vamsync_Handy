@@ -11,9 +11,13 @@ public sealed class UdpMotionListener : IAsyncDisposable
     private readonly ILogger<UdpMotionListener> _logger;
     private readonly AppState _appState;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private readonly Lock _statsLock = new();
+    private readonly Queue<DateTimeOffset> _recentPacketTimes = new();
     private CancellationTokenSource? _cts;
     private Task? _listenTask;
+    private Task? _statsTask;
     private UdpClient? _udpClient;
+    private long _totalPacketsReceived;
 
     public UdpMotionListener(ILogger<UdpMotionListener> logger, AppState appState)
     {
@@ -38,7 +42,9 @@ public sealed class UdpMotionListener : IAsyncDisposable
             _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _udpClient = new UdpClient(new IPEndPoint(IPAddress.Loopback, ListenPort));
             _listenTask = ListenLoopAsync(_udpClient, _cts.Token);
+            _statsTask = StatsLoopAsync(_cts.Token);
             _appState.SetListening(true, $"Listening on 127.0.0.1:{ListenPort}");
+            _appState.ResetUdpPacketStats();
             _appState.AddLog($"UDP listener started on 127.0.0.1:{ListenPort}.");
         }
         finally
@@ -71,11 +77,24 @@ public sealed class UdpMotionListener : IAsyncDisposable
                 }
             }
 
+            if (_statsTask is not null)
+            {
+                try
+                {
+                    await _statsTask;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
             _cts.Dispose();
             _cts = null;
             _udpClient?.Dispose();
             _udpClient = null;
             _listenTask = null;
+            _statsTask = null;
+            ClearPacketStats();
             _appState.SetListening(false, "Stopped");
             _appState.AddLog("UDP listener stopped.");
         }
@@ -106,6 +125,7 @@ public sealed class UdpMotionListener : IAsyncDisposable
                     ReceivedAt = DateTimeOffset.Now,
                 };
 
+                RegisterReceivedPacket(snapshot.ReceivedAt);
                 MotionReceived?.Invoke(this, snapshot);
             }
         }
@@ -121,6 +141,53 @@ public sealed class UdpMotionListener : IAsyncDisposable
             _appState.SetError(ex.Message);
             _appState.AddLog($"UDP listener error: {ex.Message}");
             _appState.SetListening(false, "Error");
+        }
+    }
+
+    private async Task StatsLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            PublishPacketStats(DateTimeOffset.UtcNow);
+        }
+    }
+
+    private void RegisterReceivedPacket(DateTimeOffset receivedAt)
+    {
+        lock (_statsLock)
+        {
+            _totalPacketsReceived++;
+            _recentPacketTimes.Enqueue(receivedAt);
+            TrimRecentPacketTimes(receivedAt);
+            _appState.SetUdpPacketStats(_recentPacketTimes.Count, _totalPacketsReceived);
+        }
+    }
+
+    private void PublishPacketStats(DateTimeOffset now)
+    {
+        lock (_statsLock)
+        {
+            TrimRecentPacketTimes(now);
+            _appState.SetUdpPacketStats(_recentPacketTimes.Count, _totalPacketsReceived);
+        }
+    }
+
+    private void TrimRecentPacketTimes(DateTimeOffset now)
+    {
+        while (_recentPacketTimes.Count > 0 && now - _recentPacketTimes.Peek() > TimeSpan.FromSeconds(1))
+        {
+            _recentPacketTimes.Dequeue();
+        }
+    }
+
+    private void ClearPacketStats()
+    {
+        lock (_statsLock)
+        {
+            _recentPacketTimes.Clear();
+            _totalPacketsReceived = 0;
+            _appState.ResetUdpPacketStats();
         }
     }
 

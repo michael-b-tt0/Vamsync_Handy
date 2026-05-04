@@ -30,7 +30,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
         _logger = logger;
     }
 
-    public async Task ApplyConnectionKeyAsync(string connectionKey, CancellationToken cancellationToken = default)
+    public async Task<bool> ApplyConnectionKeyAsync(string connectionKey, CancellationToken cancellationToken = default)
     {
         _appState.SetConnectionKey(connectionKey);
         _handyService.SetConnectionKey(connectionKey);
@@ -44,6 +44,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
                 deviceInfo: $"{info.HardwareModelName ?? "Handy"} / FW {info.FirmwareVersion ?? "unknown"}");
             _appState.SetError(null);
             _appState.AddLog("Handy connection verified.");
+            return true;
         }
         catch (Exception ex)
         {
@@ -51,7 +52,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
             _appState.SetHandyStatus(false, "Connection failed");
             _appState.SetError(ex.Message);
             _appState.AddLog($"Handy connection failed: {ex.Message}");
-            throw;
+            return false;
         }
     }
 
