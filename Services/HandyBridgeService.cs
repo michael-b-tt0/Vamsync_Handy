@@ -1,4 +1,6 @@
 using handyapiv3.Abstractions;
+using handyapiv3.Models;
+using handyapiv3;
 using Microsoft.Extensions.Logging;
 using Vamsync.Models;
 
@@ -8,6 +10,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
 {
     private static readonly TimeSpan MinimumCommandInterval = TimeSpan.FromMilliseconds(167);
     private readonly IHandyService _handyService;
+    private readonly HandyApiV3Client _handyClient;
     private readonly UdpMotionListener _udpMotionListener;
     private readonly AppState _appState;
     private readonly ILogger<HandyBridgeService> _logger;
@@ -17,14 +20,18 @@ public sealed class HandyBridgeService : IAsyncDisposable
     private DateTimeOffset _lastHdspCommandAt = DateTimeOffset.MinValue;
     private double? _lastPercentPosition;
     private double? _lastDurationMilliseconds;
+    private DateTimeOffset _lastSliderStateReadAt = DateTimeOffset.MinValue;
+    private int _sliderStateReadInFlight;
 
     public HandyBridgeService(
         IHandyService handyService,
+        HandyApiV3Client handyClient,
         UdpMotionListener udpMotionListener,
         AppState appState,
         ILogger<HandyBridgeService> logger)
     {
         _handyService = handyService;
+        _handyClient = handyClient;
         _udpMotionListener = udpMotionListener;
         _appState = appState;
         _logger = logger;
@@ -65,6 +72,44 @@ public sealed class HandyBridgeService : IAsyncDisposable
         _appState.AddLog("Handy connection key cleared.");
     }
 
+    public async Task<SliderStrokeResponse?> GetSliderStrokeAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var stroke = await _handyService.GetSliderStrokeAsync(cancellationToken);
+            _appState.SetError(null);
+            _appState.AddLog(
+                $"Loaded Handy stroke limits: {stroke.Min:P0} to {stroke.Max:P0}.");
+            return stroke;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load Handy stroke settings.");
+            _appState.SetError(ex.Message);
+            _appState.AddLog($"Loading Handy stroke settings failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<SliderStrokeResponse?> SetSliderStrokeAsync(double min, double max, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var stroke = await _handyService.SetSliderStrokeAsync(min, max, cancellationToken);
+            _appState.SetError(null);
+            _appState.AddLog(
+                $"Applied Handy stroke limits: {stroke.Min:P0} to {stroke.Max:P0}.");
+            return stroke;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to update Handy stroke settings.");
+            _appState.SetError(ex.Message);
+            _appState.AddLog($"Updating Handy stroke settings failed: {ex.Message}");
+            return null;
+        }
+    }
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (!_subscribed)
@@ -82,8 +127,14 @@ public sealed class HandyBridgeService : IAsyncDisposable
         await _udpMotionListener.StopAsync();
         _appState.SetMappingStatus("Stopped");
         _lastHdspCommandAt = DateTimeOffset.MinValue;
+        _lastSliderStateReadAt = DateTimeOffset.MinValue;
         _lastPercentPosition = null;
         _lastDurationMilliseconds = null;
+    }
+
+    public async Task ReadSliderStateAsync(CancellationToken cancellationToken = default)
+    {
+        await ReadSliderStateCoreAsync(null, force: true, cancellationToken);
     }
 
     private async void OnMotionReceived(object? sender, MotionSnapshot snapshot)
@@ -138,9 +189,15 @@ public sealed class HandyBridgeService : IAsyncDisposable
         _lastHdspCommandAt = now;
         _lastPercentPosition = percentPosition;
         _lastDurationMilliseconds = durationMilliseconds;
+        _appState.SetHdspDiagnostics(
+            requestedPercent: percentPosition,
+            actualSliderPercent: _appState.ActualSliderPercent,
+            status: "Waiting for slider readback");
 
         _appState.SetMappingStatus(
             $"Mapped VaM motion to Handy HDSP XPT: pos {percentPosition:F1}%, duration {durationMilliseconds:F0}ms");
+
+        TryQueueSliderStateRead(percentPosition);
     }
 
     private bool ShouldSendCommand(
@@ -179,6 +236,70 @@ public sealed class HandyBridgeService : IAsyncDisposable
         }
 
         return Math.Max(1d, snapshot.DurationSeconds * 1000d);
+    }
+
+    private void TryQueueSliderStateRead(double requestedPercent)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastSliderStateReadAt < TimeSpan.FromMilliseconds(500))
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _sliderStateReadInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _lastSliderStateReadAt = now;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReadSliderStateCoreAsync(requestedPercent, force: false, CancellationToken.None);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _sliderStateReadInFlight, 0);
+            }
+        });
+    }
+
+    private async Task ReadSliderStateCoreAsync(double? requestedPercent, bool force, CancellationToken cancellationToken)
+    {
+        if (!force && string.IsNullOrWhiteSpace(_appState.ConnectionKey))
+        {
+            return;
+        }
+
+        try
+        {
+            var response = await _handyClient.GetSliderStateAsync(cancellationToken);
+            if (response.Error is not null)
+            {
+                _appState.SetHdspDiagnostics(
+                    requestedPercent: requestedPercent ?? _appState.LastRequestedHdspPercent,
+                    actualSliderPercent: _appState.ActualSliderPercent,
+                    status: response.Error.Message ?? response.Error.Name ?? "Slider readback failed");
+                return;
+            }
+
+            var actualPercent = (response.Result?.Value ?? 0d) * 100d;
+            var requested = requestedPercent ?? _appState.LastRequestedHdspPercent;
+            var status = requested.HasValue
+                ? $"Requested {requested.Value:F1}% / actual {actualPercent:F1}%"
+                : $"Actual {actualPercent:F1}%";
+
+            _appState.SetHdspDiagnostics(requested, actualPercent, status);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to read slider state for diagnostics.");
+            _appState.SetHdspDiagnostics(
+                requestedPercent: requestedPercent ?? _appState.LastRequestedHdspPercent,
+                actualSliderPercent: _appState.ActualSliderPercent,
+                status: $"Readback failed: {ex.Message}");
+        }
     }
 
     public async ValueTask DisposeAsync()

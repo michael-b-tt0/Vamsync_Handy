@@ -32,6 +32,12 @@ public sealed class AppState
 
     public long TotalUdpPacketsReceived { get; private set; }
 
+    public double? LastRequestedHdspPercent { get; private set; }
+
+    public double? ActualSliderPercent { get; private set; }
+
+    public string SliderReadStatus { get; private set; } = "Not sampled";
+
     public IReadOnlyList<AppLogEntry> Logs
     {
         get
@@ -90,6 +96,14 @@ public sealed class AppState
     public void SetError(string? error)
     {
         LastError = error?.Trim() ?? string.Empty;
+        NotifyChanged();
+    }
+
+    public void SetHdspDiagnostics(double? requestedPercent, double? actualSliderPercent, string status)
+    {
+        LastRequestedHdspPercent = requestedPercent;
+        ActualSliderPercent = actualSliderPercent;
+        SliderReadStatus = status;
         NotifyChanged();
     }
 

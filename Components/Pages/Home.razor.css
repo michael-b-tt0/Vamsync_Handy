@@ -69,6 +69,18 @@
     gap: 10px;
 }
 
+.slider-block {
+    display: grid;
+    gap: 10px;
+}
+
+.slider-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
 .button {
     padding: 10px 14px;
     border: 0;
@@ -97,6 +109,10 @@
 .status-list {
     display: grid;
     gap: 10px;
+}
+
+.status-list.compact {
+    gap: 8px;
 }
 
 .status-line {

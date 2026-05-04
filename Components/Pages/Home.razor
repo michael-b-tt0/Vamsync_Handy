@@ -1,5 +1,6 @@
 @page "/"
 @implements IDisposable
+@using handyapiv3.Models
 @inject Vamsync.Services.AppState AppState
 @inject Vamsync.Services.HandyBridgeService Bridge
 
@@ -30,6 +31,42 @@
             @if (!string.IsNullOrWhiteSpace(AppState.LastError))
             {
                 <div class="error">@AppState.LastError</div>
+            }
+        </section>
+
+        <section class="panel stack">
+            <h2>Stroke Limits</h2>
+            <p class="muted">
+                Restrict Handy motion to a device-enforced range between 0% and 100% of the stroke.
+            </p>
+
+            <div class="slider-block">
+                <div class="slider-header">
+                    <span class="field-label">Minimum position</span>
+                    <strong>@FormatPercent(_strokeMin)</strong>
+                </div>
+                <FluentSlider @bind-Value="_strokeMin" Min="0.0" Max="1.0" Step="0.01" Immediate="true" Disabled="@_busy" />
+            </div>
+
+            <div class="slider-block">
+                <div class="slider-header">
+                    <span class="field-label">Maximum position</span>
+                    <strong>@FormatPercent(_strokeMax)</strong>
+                </div>
+                <FluentSlider @bind-Value="_strokeMax" Min="0.0" Max="1.0" Step="0.01" Immediate="true" Disabled="@_busy" />
+            </div>
+
+            <div class="actions">
+                <button class="button secondary" @onclick="LoadStrokeAsync" disabled="@_busy">Load From Handy</button>
+                <button class="button" @onclick="ApplyStrokeAsync" disabled="@_busy">Apply Limits</button>
+            </div>
+
+            @if (_strokeInfo is not null)
+            {
+                <div class="status-list compact">
+                    <div class="status-line"><span class="muted">Active range</span><strong>@FormatPercent(_strokeInfo.Min) - @FormatPercent(_strokeInfo.Max)</strong></div>
+                    <div class="status-line"><span class="muted">Absolute range</span><strong>@_strokeInfo.MinAbsolute.ToString("F1") mm - @_strokeInfo.MaxAbsolute.ToString("F1") mm</strong></div>
+                </div>
             }
         </section>
 
@@ -80,6 +117,9 @@
 @code {
     private bool _busy;
     private string _connectionKey = string.Empty;
+    private double _strokeMin;
+    private double _strokeMax = 1d;
+    private SliderStrokeResponse? _strokeInfo;
 
     protected override void OnInitialized()
     {
@@ -100,6 +140,7 @@
             if (connected)
             {
                 Preferences.Default.Set("handy_connection_key", _connectionKey);
+                await RefreshStrokeAsync();
             }
         });
     }
@@ -117,6 +158,7 @@
                 }
 
                 Preferences.Default.Set("handy_connection_key", _connectionKey);
+                await RefreshStrokeAsync();
             }
 
             await Bridge.StartAsync();
@@ -134,8 +176,28 @@
         {
             Bridge.ClearConnectionKey();
             _connectionKey = string.Empty;
+            _strokeInfo = null;
+            _strokeMin = 0d;
+            _strokeMax = 1d;
             Preferences.Default.Remove("handy_connection_key");
             return Task.CompletedTask;
+        });
+    }
+
+    private async Task LoadStrokeAsync()
+    {
+        await RunBusyAsync(RefreshStrokeAsync);
+    }
+
+    private async Task ApplyStrokeAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            var stroke = await Bridge.SetSliderStrokeAsync(_strokeMin, _strokeMax);
+            if (stroke is not null)
+            {
+                ApplyStrokeState(stroke);
+            }
         });
     }
 
@@ -151,6 +213,24 @@
             _busy = false;
         }
     }
+
+    private async Task RefreshStrokeAsync()
+    {
+        var stroke = await Bridge.GetSliderStrokeAsync();
+        if (stroke is not null)
+        {
+            ApplyStrokeState(stroke);
+        }
+    }
+
+    private void ApplyStrokeState(SliderStrokeResponse stroke)
+    {
+        _strokeInfo = stroke;
+        _strokeMin = stroke.Min;
+        _strokeMax = stroke.Max;
+    }
+
+    private static string FormatPercent(double value) => value.ToString("P0");
 
     private void OnAppStateChanged(object? sender, EventArgs e)
     {
