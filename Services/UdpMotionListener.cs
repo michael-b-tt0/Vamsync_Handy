@@ -111,19 +111,14 @@ public sealed class UdpMotionListener : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 var result = await client.ReceiveAsync(cancellationToken);
-                if (result.Buffer.Length != 6)
+                if (!MotionSnapshot.TryParse(
+                    result.Buffer,
+                    DateTimeOffset.UtcNow,
+                    out var snapshot))
                 {
-                    _appState.AddLog($"Ignored UDP packet with unexpected length {result.Buffer.Length}.");
+                    _appState.AddLog($"Ignored invalid UDP packet with length {result.Buffer.Length}.");
                     continue;
                 }
-
-                var snapshot = new MotionSnapshot
-                {
-                    Position = result.Buffer[0],
-                    Speed = result.Buffer[1],
-                    DurationSeconds = BitConverter.ToSingle(result.Buffer, 2),
-                    ReceivedAt = DateTimeOffset.Now,
-                };
 
                 RegisterReceivedPacket(snapshot.ReceivedAt);
                 MotionReceived?.Invoke(this, snapshot);
