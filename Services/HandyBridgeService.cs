@@ -6,29 +6,22 @@ namespace Vamsync.Services;
 
 public sealed class HandyBridgeService : IAsyncDisposable
 {
-    private static readonly TimeSpan MinimumCommandInterval = TimeSpan.FromMilliseconds(167);
     private static readonly TimeSpan MinimumConnectionStatusCheckInterval = TimeSpan.FromSeconds(2);
-    private const double AbsoluteMinimumDurationMilliseconds = 50d;
-    private const double MaximumTravelUnitsPerSecond = 3d;
-    
-    private const double StopOnTargetPositionDeltaThreshold = 0.005d;
-    private const double PositionDeltaSendThreshold = 0.01d;
+    private const double AbsoluteMinimumDurationMilliseconds = 100d;
+    private const double MaximumTravelUnitsPerSecond = 3.5d;
+
     private readonly IHandyService _handyService;
     private readonly UdpMotionListener _udpMotionListener;
     private readonly AppState _appState;
     private readonly MotionCsvLogger _motionCsvLogger;
     private readonly ILogger<HandyBridgeService> _logger;
-    private readonly Lock _pendingMotionLock = new();
+    private readonly Lock _motionStateLock = new();
     private readonly Lock _connectionStatusLock = new();
 
     private bool _subscribed;
-    private bool _processingMotion;
     private bool _checkingConnectionStatus;
-    private MotionSnapshot? _pendingMotion;
-    private DateTimeOffset _lastHdspCommandAt = DateTimeOffset.MinValue;
     private DateTimeOffset _lastConnectionStatusCheckAt = DateTimeOffset.MinValue;
     private double? _lastHandyPosition;
-    private double? _lastDurationMilliseconds;
 
     public HandyBridgeService(
         IHandyService handyService,
@@ -81,6 +74,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
         _handyService.ClearConnectionKey();
         _appState.SetConnectionKey(string.Empty);
         _appState.SetHandyStatus(false, "Not connected", "Unknown");
+        
         _appState.SetMappingStatus("Idle");
         _appState.AddLog("Handy connection key cleared.");
     }
@@ -102,66 +96,15 @@ public sealed class HandyBridgeService : IAsyncDisposable
     {
         await _udpMotionListener.StopAsync();
         _appState.SetMappingStatus("Stopped");
-        _lastHdspCommandAt = DateTimeOffset.MinValue;
-        _lastHandyPosition = null;
-        _lastDurationMilliseconds = null;
+        lock (_motionStateLock)
+        {
+            _lastHandyPosition = null;
+        }
     }
 
     private void OnMotionReceived(object? sender, MotionSnapshot snapshot)
     {
-        var shouldStartProcessor = false;
-
-        lock (_pendingMotionLock)
-        {
-            // Keep only the most recent motion packet so bursts do not build a stale queue.
-            _pendingMotion = snapshot;
-            if (!_processingMotion)
-            {
-                _processingMotion = true;
-                shouldStartProcessor = true;
-            }
-        }
-
-        if (shouldStartProcessor)
-        {
-            _ = ProcessPendingMotionAsync();
-        }
-    }
-
-    private async Task ProcessPendingMotionAsync()
-    {
-        while (true)
-        {
-            MotionSnapshot? snapshot;
-
-            lock (_pendingMotionLock)
-            {
-                snapshot = _pendingMotion;
-                _pendingMotion = null;
-
-                if (snapshot is null)
-                {
-                    _processingMotion = false;
-                    return;
-                }
-            }
-
-            try
-            {
-                await HandleMotionAsync(snapshot);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to map motion snapshot to Handy commands.");
-                await _motionCsvLogger.LogDeviceEventAsync(
-                    "send-failed",
-                    "Failed to send Handy HDSP XPT command.",
-                    ex);
-                await CheckHandyConnectionStatusOnTimeoutAsync(ex);
-                _appState.SetError(ex.Message);
-                _appState.AddLog($"Motion mapping failed: {ex.Message}");
-            }
-        }
+        _ = DispatchMotionAsync(snapshot);
     }
 
     private async Task HandleMotionAsync(MotionSnapshot snapshot)
@@ -175,24 +118,30 @@ public sealed class HandyBridgeService : IAsyncDisposable
         }
 
         _appState.SetError(null);
-
         var handyPosition = Math.Clamp(snapshot.Position / 99d, 0d, 1d);
-        var durationMilliseconds = ResolveDurationMilliseconds(snapshot, handyPosition, _lastHandyPosition);
-        var stopOnTarget = snapshot.Speed <= 2; 
-        var now = DateTimeOffset.UtcNow;
+        var stopOnTarget = snapshot.Speed <= 2;
 
-        if (!ShouldSendCommand(now, handyPosition, durationMilliseconds, stopOnTarget, out var suppressionReason))
+        if (snapshot.DurationSeconds <= 0f)
         {
             await _motionCsvLogger.LogMovementSuppressedAsync(
                 snapshot,
                 handyPosition,
-                durationMilliseconds,
+                0d,
                 stopOnTarget,
-                suppressionReason);
+                "Source duration is zero; packet was not forwarded to Handy.");
             _appState.SetMappingStatus(
-                $"Holding latest VaM motion: pos {handyPosition:P1}, duration {durationMilliseconds:F0}ms");
+                $"Ignoring VaM motion with zero source duration: pos {handyPosition:P1}, speed {snapshot.Speed}");
             return;
         }
+
+        double? lastHandyPosition;
+        lock (_motionStateLock)
+        {
+            lastHandyPosition = _lastHandyPosition;
+            _lastHandyPosition = handyPosition;
+        }
+
+        var durationMilliseconds = ResolveDurationMilliseconds(snapshot, handyPosition, lastHandyPosition);
 
         var hdspResult = await SendHdspXptWithLoggingAsync(
             handyPosition: handyPosition,
@@ -200,9 +149,6 @@ public sealed class HandyBridgeService : IAsyncDisposable
             stopOnTarget: stopOnTarget,
             immediateResponse: true);
 
-        _lastHdspCommandAt = now;
-        _lastHandyPosition = handyPosition;
-        _lastDurationMilliseconds = durationMilliseconds;
         await _motionCsvLogger.LogMovementSentAsync(
             snapshot,
             handyPosition,
@@ -211,46 +157,6 @@ public sealed class HandyBridgeService : IAsyncDisposable
 
         _appState.SetMappingStatus(
             $"Mapped VaM motion to Handy HDSP XPT: pos {handyPosition:P1}, duration {durationMilliseconds:F0}ms, result {hdspResult}");
-    }
-
-    private bool ShouldSendCommand(
-        DateTimeOffset now,
-        double handyPosition,
-        double durationMilliseconds,
-        bool stopOnTarget,
-        out string suppressionReason)
-    {
-        suppressionReason = string.Empty;
-
-        if (_lastHandyPosition is null || _lastDurationMilliseconds is null)
-        {
-            return true;
-        }
-
-        var enoughTimeElapsed = now - _lastHdspCommandAt >= MinimumCommandInterval;
-        var positionDelta = Math.Abs(handyPosition - _lastHandyPosition.Value);
-        var durationDelta = Math.Abs(durationMilliseconds - _lastDurationMilliseconds.Value);
-
-        if (stopOnTarget && positionDelta >= StopOnTargetPositionDeltaThreshold)
-        {
-            return true;
-        }
-
-        if (!enoughTimeElapsed)
-        {
-            suppressionReason =
-                $"Minimum interval not reached; elapsed_ms={(now - _lastHdspCommandAt).TotalMilliseconds:F3}, required_ms={MinimumCommandInterval.TotalMilliseconds:F3}, xp_delta={positionDelta:F5}, duration_delta={durationDelta:F3}, stop_on_target={stopOnTarget.ToString().ToLowerInvariant()}";
-            return false;
-        }
-
-        if (positionDelta >= PositionDeltaSendThreshold || durationDelta >= 15d)
-        {
-            return true;
-        }
-
-        suppressionReason =
-            $"Movement delta below threshold; xp_delta={positionDelta:F5}, duration_delta={durationDelta:F3}, min_xp_delta={PositionDeltaSendThreshold:F5}, min_duration_delta=15.000, stop_on_target={stopOnTarget.ToString().ToLowerInvariant()}";
-        return false;
     }
 
     private static double ResolveDurationMilliseconds(
@@ -274,6 +180,25 @@ public sealed class HandyBridgeService : IAsyncDisposable
         return Math.Max(
             AbsoluteMinimumDurationMilliseconds,
             Math.Max(requestedDurationMilliseconds, velocityLimitedMinimumDurationMilliseconds));
+    }
+
+    private async Task DispatchMotionAsync(MotionSnapshot snapshot)
+    {
+        try
+        {
+            await HandleMotionAsync(snapshot);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to map motion snapshot to Handy commands.");
+            await _motionCsvLogger.LogDeviceEventAsync(
+                "send-failed",
+                "Failed to send Handy HDSP XPT command.",
+                ex);
+            await CheckHandyConnectionStatusOnTimeoutAsync(ex);
+            _appState.SetError(ex.Message);
+            _appState.AddLog($"Motion mapping failed: {ex.Message}");
+        }
     }
 
     private async Task CheckHandyConnectionStatusOnTimeoutAsync(Exception ex)
@@ -378,7 +303,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
                 "hdsp-xpt",
                 requestSummary,
                 success: true,
-                responseSummary: result,
+                
                 cancellationToken: cancellationToken);
             return result;
         }
@@ -405,7 +330,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
                 "get-connected",
                 requestSummary,
                 success: true,
-                responseSummary: $"connected={result.ToString().ToLowerInvariant()}",
+                
                 cancellationToken: cancellationToken);
             return result;
         }
