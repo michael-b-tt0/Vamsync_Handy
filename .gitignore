@@ -1,3 +1,6 @@
 /.vs
 /bin
 /obj
+handy_api_calls.csv
+handy_movements.csv
+suppressed_movements.csv

@@ -19,7 +19,9 @@ public sealed class UdpMotionListener : IAsyncDisposable
     private UdpClient? _udpClient;
     private long _totalPacketsReceived;
 
-    public UdpMotionListener(ILogger<UdpMotionListener> logger, AppState appState)
+    public UdpMotionListener(
+        ILogger<UdpMotionListener> logger,
+        AppState appState)
     {
         _logger = logger;
         _appState = appState;
@@ -111,12 +113,16 @@ public sealed class UdpMotionListener : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 var result = await client.ReceiveAsync(cancellationToken);
+                var receivedAt = DateTimeOffset.UtcNow;
                 if (!MotionSnapshot.TryParse(
                     result.Buffer,
-                    DateTimeOffset.UtcNow,
-                    out var snapshot))
+                    receivedAt,
+                    out var snapshot,
+                    out _,
+                    out var rejectionReason))
                 {
-                    _appState.AddLog($"Ignored invalid UDP packet with length {result.Buffer.Length}.");
+                    var reason = rejectionReason ?? $"Rejected UDP packet with length {result.Buffer.Length}.";
+                    _appState.AddLog($"Ignored invalid UDP packet: {reason}");
                     continue;
                 }
 

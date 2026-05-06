@@ -36,6 +36,7 @@ namespace Vamsync
             builder.Services.AddSingleton<HandyApiV3Client>();
             builder.Services.AddSingleton<IHandyService, HandyService>();
             builder.Services.AddSingleton<AppState>();
+            builder.Services.AddSingleton<MotionCsvLogger>();
             builder.Services.AddSingleton<UdpMotionListener>();
             builder.Services.AddSingleton<HandyBridgeService>();
 
