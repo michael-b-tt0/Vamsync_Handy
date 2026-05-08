@@ -27,6 +27,18 @@ public sealed class MotionCsvLogger
         _apiCallsFilePath = Path.Combine(_logDirectory, ApiCallsFileName);
     }
 
+    public bool Enabled
+    {
+        get
+        {
+#if DEBUG
+            return true;
+#else
+            return false;
+#endif
+        }
+    }
+
     public string LogDirectory => _logDirectory;
 
     public async Task LogMovementSentAsync(
@@ -36,6 +48,11 @@ public sealed class MotionCsvLogger
         bool stopOnTarget,
         CancellationToken cancellationToken = default)
     {
+        if (!Enabled)
+        {
+            return;
+        }
+
         var row = string.Join(",",
             Escape(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
             Escape(snapshot.ReceivedAt.ToString("O", CultureInfo.InvariantCulture)),
@@ -61,6 +78,11 @@ public sealed class MotionCsvLogger
         string suppressionReason,
         CancellationToken cancellationToken = default)
     {
+        if (!Enabled)
+        {
+            return;
+        }
+
         var row = string.Join(",",
             Escape(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
             Escape(snapshot.ReceivedAt.ToString("O", CultureInfo.InvariantCulture)),
@@ -85,6 +107,11 @@ public sealed class MotionCsvLogger
         Exception? exception = null,
         CancellationToken cancellationToken = default)
     {
+        if (!Enabled)
+        {
+            return;
+        }
+
         var row = string.Join(",",
             Escape(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
             Escape(eventType),
@@ -107,6 +134,11 @@ public sealed class MotionCsvLogger
         Exception? exception = null,
         CancellationToken cancellationToken = default)
     {
+        if (!Enabled)
+        {
+            return;
+        }
+
         var row = string.Join(",",
             Escape(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
             Escape(operation),

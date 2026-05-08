@@ -95,7 +95,10 @@ public sealed class HandyBridgeService : IAsyncDisposable
             StartConnectionMonitor();
         }
         _appState.SetMappingStatus("Waiting for VaM motion");
-        _appState.AddLog($"CSV logs are being written to {_motionCsvLogger.LogDirectory}.");
+        if (_motionCsvLogger.Enabled)
+        {
+            _appState.AddLog($"CSV logs are being written to {_motionCsvLogger.LogDirectory}.");
+        }
     }
 
     public async Task StopAsync()
