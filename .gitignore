@@ -4,3 +4,6 @@
 handy_api_calls.csv
 handy_movements.csv
 suppressed_movements.csv
+installer/vamsync-installer.iss
+.gitignore
+releases/output/vamsync-installer.exe
