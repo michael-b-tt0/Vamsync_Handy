@@ -52,25 +52,28 @@
                                       OnClick="VerifyConnectionAsync"
                                       Disabled="_busy"
                                       Class="action-btn">
-                            Connect
-                        </FluentButton>
-                        <FluentButton Appearance="Appearance.Neutral"
-                                      OnClick="StartBridgeAsync"
-                                      Disabled="_busy"
-                                      Class="action-btn">
-                            Start
-                        </FluentButton>
-                        <FluentButton Appearance="Appearance.Neutral"
-                                      OnClick="StopBridgeAsync"
-                                      Disabled="_busy"
-                                      Class="action-btn warn-btn">
-                            Stop
+                            Connect Handy
                         </FluentButton>
                         <FluentButton Appearance="Appearance.Stealth"
                                       OnClick="ClearConnectionAsync"
                                       Disabled="_busy"
                                       Class="action-btn">
-                            Clear
+                            Clear key
+                        </FluentButton>
+                    </div>
+
+                    <div class="button-row">
+                        <FluentButton Appearance="Appearance.Neutral"
+                                      OnClick="StartBridgeAsync"
+                                      Disabled="_busy"
+                                      Class="action-btn">
+                            Start listening for actions
+                        </FluentButton>
+                        <FluentButton Appearance="Appearance.Neutral"
+                                      OnClick="StopBridgeAsync"
+                                      Disabled="_busy"
+                                      Class="action-btn warn-btn">
+                            Stop listening for actions
                         </FluentButton>
                     </div>
 

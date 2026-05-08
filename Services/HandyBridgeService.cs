@@ -1,4 +1,5 @@
 using handyapiv3.Abstractions;
+using handyapiv3.Models;
 using Microsoft.Extensions.Logging;
 using Vamsync.Models;
 
@@ -6,9 +7,8 @@ namespace Vamsync.Services;
 
 public sealed class HandyBridgeService : IAsyncDisposable
 {
-    private static readonly TimeSpan MinimumConnectionStatusCheckInterval = TimeSpan.FromSeconds(2);
     private const double AbsoluteMinimumDurationMilliseconds = 100d;
-    private const double MaximumTravelUnitsPerSecond = 3.5d;
+    private const double MaximumTravelUnitsPerSecond = 3.25d;
 
     private readonly IHandyService _handyService;
     private readonly UdpMotionListener _udpMotionListener;
@@ -16,11 +16,10 @@ public sealed class HandyBridgeService : IAsyncDisposable
     private readonly MotionCsvLogger _motionCsvLogger;
     private readonly ILogger<HandyBridgeService> _logger;
     private readonly Lock _motionStateLock = new();
-    private readonly Lock _connectionStatusLock = new();
 
     private bool _subscribed;
-    private bool _checkingConnectionStatus;
-    private DateTimeOffset _lastConnectionStatusCheckAt = DateTimeOffset.MinValue;
+    private CancellationTokenSource? _connectionMonitorCts;
+    private Task? _connectionMonitorTask;
     private double? _lastHandyPosition;
 
     public HandyBridgeService(
@@ -53,11 +52,13 @@ public sealed class HandyBridgeService : IAsyncDisposable
                 deviceInfo: $"{info.HardwareModelName ?? "Handy"} / FW {info.FirmwareVersion ?? "unknown"}");
             _appState.SetError(null);
             _appState.AddLog("Handy connection verified.");
+            StartConnectionMonitor();
             return true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to verify Handy connection.");
+            await StopConnectionMonitorAsync();
             _appState.SetHandyStatus(false, "Connection failed");
             _appState.SetError(ex.Message);
             _appState.AddLog($"Handy connection failed: {ex.Message}");
@@ -71,6 +72,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
 
     public void ClearConnectionKey()
     {
+        _ = StopConnectionMonitorAsync();
         _handyService.ClearConnectionKey();
         _appState.SetConnectionKey(string.Empty);
         _appState.SetHandyStatus(false, "Not connected", "Unknown");
@@ -88,12 +90,17 @@ public sealed class HandyBridgeService : IAsyncDisposable
         }
 
         await _udpMotionListener.StartAsync(cancellationToken);
+        if (!string.IsNullOrWhiteSpace(_appState.ConnectionKey))
+        {
+            StartConnectionMonitor();
+        }
         _appState.SetMappingStatus("Waiting for VaM motion");
         _appState.AddLog($"CSV logs are being written to {_motionCsvLogger.LogDirectory}.");
     }
 
     public async Task StopAsync()
     {
+        await StopConnectionMonitorAsync();
         await _udpMotionListener.StopAsync();
         _appState.SetMappingStatus("Stopped");
         lock (_motionStateLock)
@@ -143,7 +150,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
 
         var durationMilliseconds = ResolveDurationMilliseconds(snapshot, handyPosition, lastHandyPosition);
 
-        var hdspResult = await SendHdspXptWithLoggingAsync(
+        await SendHdspXptWithLoggingAsync(
             handyPosition: handyPosition,
             duration: durationMilliseconds,
             stopOnTarget: stopOnTarget,
@@ -156,7 +163,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
             stopOnTarget);
 
         _appState.SetMappingStatus(
-            $"Mapped VaM motion to Handy HDSP XPT: pos {handyPosition:P1}, duration {durationMilliseconds:F0}ms, result {hdspResult}");
+            $"Mapped VaM motion to Handy HDSP XPT: pos {handyPosition:P1}, duration {durationMilliseconds:F0}ms");
     }
 
     private static double ResolveDurationMilliseconds(
@@ -195,91 +202,160 @@ public sealed class HandyBridgeService : IAsyncDisposable
                 "send-failed",
                 "Failed to send Handy HDSP XPT command.",
                 ex);
-            await CheckHandyConnectionStatusOnTimeoutAsync(ex);
+            UpdateHandyStatusFromSendFailure(ex);
             _appState.SetError(ex.Message);
             _appState.AddLog($"Motion mapping failed: {ex.Message}");
         }
     }
 
-    private async Task CheckHandyConnectionStatusOnTimeoutAsync(Exception ex)
+    private void StartConnectionMonitor()
     {
-        if (!IsDeviceTimeout(ex))
+        if (_connectionMonitorTask is not null && !_connectionMonitorTask.IsCompleted)
         {
             return;
         }
 
-        var shouldCheckStatus = false;
-        var now = DateTimeOffset.UtcNow;
+        _connectionMonitorCts?.Cancel();
+        _connectionMonitorCts?.Dispose();
+        _connectionMonitorCts = new CancellationTokenSource();
+        _connectionMonitorTask = MonitorConnectionStatusAsync(_connectionMonitorCts.Token);
+    }
 
-        lock (_connectionStatusLock)
+    private async Task StopConnectionMonitorAsync()
+    {
+        var cts = _connectionMonitorCts;
+        var task = _connectionMonitorTask;
+
+        _connectionMonitorCts = null;
+        _connectionMonitorTask = null;
+
+        if (cts is null)
         {
-            if (!_checkingConnectionStatus && now - _lastConnectionStatusCheckAt >= MinimumConnectionStatusCheckInterval)
+            return;
+        }
+
+        cts.Cancel();
+        if (task is not null)
+        {
+            try
             {
-                _checkingConnectionStatus = true;
-                _lastConnectionStatusCheckAt = now;
-                shouldCheckStatus = true;
+                await task;
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
 
-        if (!shouldCheckStatus)
-        {
-            return;
-        }
+        cts.Dispose();
+    }
 
+    private async Task MonitorConnectionStatusAsync(CancellationToken cancellationToken)
+    {
         try
         {
-            _appState.AddLog("Handy API reported device timeout. Checking connection status...");
+            var eventTypes = new[]
+            {
+                HandySseEventTypes.DeviceStatus,
+                HandySseEventTypes.DeviceConnected,
+                HandySseEventTypes.DeviceDisconnected,
+                HandySseEventTypes.DeviceError,
+            };
+
+            await foreach (var deviceEvent in _handyService.SubscribeToDeviceEventsAsync(
+                eventTypes,
+                cancellationToken: cancellationToken))
+            {
+                ApplyHandyDeviceEvent(deviceEvent);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Handy SSE connection monitor failed.");
+            _appState.SetHandyStatus(false, "Device event monitor failed");
+            _appState.SetMappingStatus("Stopped after Handy SSE monitor error");
+            _appState.SetError(ex.Message);
+            _appState.AddLog($"Handy SSE monitor failed: {ex.Message}");
             await _motionCsvLogger.LogDeviceEventAsync(
-                "device-timeout",
-                "Handy API reported device timeout. Checking connection status...",
+                "sse-monitor-failed",
+                "Handy SSE monitor failed.",
                 ex);
-
-            var connected = await GetConnectedWithLoggingAsync(
-                "timeout_followup=true");
-            if (!connected)
-            {
-                _appState.SetHandyStatus(false, "Disconnected");
-                _appState.SetMappingStatus("Handy device timeout");
-                _appState.AddLog("Handy connection check failed after device timeout.");
-                await _motionCsvLogger.LogDeviceEventAsync(
-                    "connection-check-disconnected",
-                    "Handy connection check reported disconnected after device timeout.");
-                return;
-            }
-
-            var info = await GetInfoWithLoggingAsync(
-                requestSummary: "timeout_followup=true",
-                cancellationToken: default);
-            _appState.SetHandyStatus(
-                connected: true,
-                status: "Connected",
-                deviceInfo: $"{info.HardwareModelName ?? "Handy"} / FW {info.FirmwareVersion ?? "unknown"}");
-            _appState.AddLog("Handy connection check succeeded after device timeout.");
-            await _motionCsvLogger.LogDeviceEventAsync(
-                "connection-check-succeeded",
-                "Handy connection check succeeded after device timeout.");
-        }
-        catch (Exception statusEx)
-        {
-            _logger.LogWarning(statusEx, "Failed to refresh Handy connection status after device timeout.");
-            _appState.SetHandyStatus(false, "Connection check failed");
-            _appState.AddLog($"Handy connection check failed after device timeout: {statusEx.Message}");
-            await _motionCsvLogger.LogDeviceEventAsync(
-                "connection-check-failed",
-                "Handy connection check failed after device timeout.",
-                statusEx);
-        }
-        finally
-        {
-            lock (_connectionStatusLock)
-            {
-                _checkingConnectionStatus = false;
-            }
+            await _udpMotionListener.StopAsync();
         }
     }
 
-    private static bool IsDeviceTimeout(Exception ex) =>
-        ex.Message.Contains("Device timeout", StringComparison.OrdinalIgnoreCase);
+    private void ApplyHandyDeviceEvent(HandySseEvent deviceEvent)
+    {
+        switch (deviceEvent.Type)
+        {
+            case HandySseEventTypes.DeviceStatus:
+            case HandySseEventTypes.DeviceConnected:
+                SyncHandyStatusFromService("Connected");
+                _appState.SetError(null);
+                break;
+
+            case HandySseEventTypes.DeviceDisconnected:
+                var disconnect = deviceEvent.DeserializeDeviceData<DeviceDisconnectedEventData>();
+                _appState.SetHandyStatus(false, "Disconnected");
+                if (!string.IsNullOrWhiteSpace(disconnect?.Reason))
+                {
+                    var message = $"Handy disconnected: {disconnect.Reason}";
+                    _appState.SetError(message);
+                    _appState.AddLog(message);
+                }
+                else
+                {
+                    _appState.AddLog("Handy SSE reported device disconnected.");
+                }
+                break;
+
+            case HandySseEventTypes.DeviceError:
+                var error = deviceEvent.DeserializeDeviceData<ErrorEventData>();
+                _appState.SetHandyStatus(_handyService.Connected, _handyService.Connected ? "Device error" : "Disconnected");
+                if (!string.IsNullOrWhiteSpace(error?.Message))
+                {
+                    var message = $"Handy device error: {error.Message}";
+                    _appState.SetError(message);
+                    _appState.AddLog(message);
+                }
+                break;
+        }
+    }
+
+    private void SyncHandyStatusFromService(string connectedStatus)
+    {
+        var info = _handyService.Info;
+        var deviceInfo = info is null
+            ? null
+            : $"{info.HardwareModelName ?? "Handy"} / FW {info.FirmwareVersion ?? "unknown"}";
+
+        _appState.SetHandyStatus(
+            _handyService.Connected,
+            _handyService.Connected ? connectedStatus : "Disconnected",
+            deviceInfo);
+    }
+
+    private void UpdateHandyStatusFromSendFailure(Exception ex)
+    {
+        if (ex.Message.Contains("Device not connected", StringComparison.OrdinalIgnoreCase))
+        {
+            _appState.SetHandyStatus(false, "Disconnected");
+            _appState.SetMappingStatus("Handy device disconnected");
+            return;
+        }
+
+        if (ex.Message.Contains("Device timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            _appState.SetHandyStatus(false, "Device timeout");
+            _appState.SetMappingStatus("Handy device timeout");
+            return;
+        }
+
+        _appState.SetHandyStatus(false, "API error");
+        _appState.SetMappingStatus("Handy API error");
+    }
 
     private async Task<string> SendHdspXptWithLoggingAsync(
         double handyPosition,
@@ -311,33 +387,6 @@ public sealed class HandyBridgeService : IAsyncDisposable
         {
             await _motionCsvLogger.LogApiCallAsync(
                 "hdsp-xpt",
-                requestSummary,
-                success: false,
-                exception: ex,
-                cancellationToken: cancellationToken);
-            throw;
-        }
-    }
-
-    private async Task<bool> GetConnectedWithLoggingAsync(
-        string requestSummary,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var result = await _handyService.GetConnectedAsync(cancellationToken);
-            await _motionCsvLogger.LogApiCallAsync(
-                "get-connected",
-                requestSummary,
-                success: true,
-                
-                cancellationToken: cancellationToken);
-            return result;
-        }
-        catch (Exception ex)
-        {
-            await _motionCsvLogger.LogApiCallAsync(
-                "get-connected",
                 requestSummary,
                 success: false,
                 exception: ex,
