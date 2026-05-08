@@ -162,13 +162,23 @@
 }
 
 ::deep .warn-btn::part(control) {
-    background: rgba(245, 158, 11, 0.12);
-    color: #b45309;
+    background: rgba(240, 147, 165, 0.943);
+    color: #120f0f;
     border-color: rgba(245, 158, 11, 0.3);
 }
 
 ::deep .warn-btn::part(control):hover {
-    background: rgba(245, 158, 11, 0.22);
+    background: rgba(246, 90, 121, 0.22);
+}
+
+::deep .start-btn::part(control) {
+    background: rgba(144, 247, 130, 0.943);
+    color: #120f0f;
+    border-color: rgba(245, 158, 11, 0.3);
+}
+
+::deep .start-btn::part(control):hover {
+    background: rgba(32, 150, 35, 0.22);
 }
 
 .error-banner {
