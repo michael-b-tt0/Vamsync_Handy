@@ -143,7 +143,7 @@ h1:focus {
 /* VaMSync Home page styles moved here temporarily because the current
    MAUI/Blazor scoped CSS bundle is not being emitted correctly. */
 
-.shell {
+/* .shell {
     display: grid;
     grid-template-rows: auto auto 1fr;
     min-height: 100vh;
@@ -502,4 +502,4 @@ h1:focus {
     .stat-value {
         text-align: left;
     }
-}
+} */

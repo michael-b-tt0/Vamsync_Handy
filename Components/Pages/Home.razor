@@ -240,7 +240,8 @@
     {
         await RunBusyAsync(async () =>
         {
-            if (!string.IsNullOrWhiteSpace(_connectionKey) && _connectionKey != AppState.ConnectionKey)
+            if (!string.IsNullOrWhiteSpace(_connectionKey)
+                && (_connectionKey != AppState.ConnectionKey || !AppState.HandyConnected))
             {
                 var connected = await Bridge.ApplyConnectionKeyAsync(_connectionKey);
                 if (!connected)

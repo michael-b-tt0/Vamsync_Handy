@@ -7,3 +7,4 @@ suppressed_movements.csv
 installer/vamsync-installer.iss
 .gitignore
 releases/output/vamsync-installer.exe
+build-diag.log

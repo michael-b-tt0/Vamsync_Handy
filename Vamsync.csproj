@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <TargetFrameworks>net10.0-windows10.0.19041.0</TargetFrameworks>
-        <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
+        
        
 
         <OutputType>Exe</OutputType>
@@ -22,10 +22,12 @@
         <MauiXamlInflator>SourceGen</MauiXamlInflator>
 
         <!-- Display name -->
-        <ApplicationTitle>Vamsync</ApplicationTitle>
+        <ApplicationTitle>Vamsync Handy</ApplicationTitle>
 
         <!-- App Identifier -->
-        <ApplicationId>com.companyname.vamsync</ApplicationId>
+        <ApplicationId>com.Vamsync.Handy</ApplicationId>
+
+		<AssemblyName>VamsyncHandy</AssemblyName>
 
         <!-- Versions -->
         <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
@@ -62,6 +64,10 @@
         <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="10.0.60" />
         <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.7" />
         <ProjectReference Include="../../../class librarys/handyapiv3/handyapiv3.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Content Include="Components\**\*.razor.css" />
     </ItemGroup>
 
 </Project>

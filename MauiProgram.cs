@@ -11,6 +11,18 @@ namespace Vamsync
     {
         public static MauiApp CreateMauiApp()
         {
+
+            var userDataFolder = Path.Combine(
+            FileSystem.AppDataDirectory,
+            "WebView2"
+        );
+
+        Directory.CreateDirectory(userDataFolder);
+
+        Environment.SetEnvironmentVariable(
+            "WEBVIEW2_USER_DATA_FOLDER",
+            userDataFolder
+        );
             var builder = MauiApp.CreateBuilder();
             builder
                 .UseMauiApp<App>()
@@ -32,6 +44,7 @@ namespace Vamsync
             builder.Services.AddSingleton(new HandyApiV3ClientOptions
             {
                 ConnectionKey = null,
+                ApplicationApiKey = "wKTdv0fJNfBRdkf4-x5gUvtSuNPWzv-s",
             });
             builder.Services.AddSingleton<HandyApiV3Client>();
             builder.Services.AddSingleton<IHandyService, HandyService>();

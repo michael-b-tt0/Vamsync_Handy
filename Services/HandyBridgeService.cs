@@ -8,7 +8,7 @@ namespace Vamsync.Services;
 public sealed class HandyBridgeService : IAsyncDisposable
 {
     private const double AbsoluteMinimumDurationMilliseconds = 100d;
-    private const double MaximumTravelUnitsPerSecond = 3.25d;
+    private const double MaximumTravelUnitsPerSecond = 3.10d;
 
     private readonly IHandyService _handyService;
     private readonly UdpMotionListener _udpMotionListener;
