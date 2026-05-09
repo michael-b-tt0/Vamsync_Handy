@@ -9,3 +9,4 @@ installer/vamsync-installer.iss
 releases/output/vamsync-installer.exe
 build-diag.log
 releases/output/vamsync-handy-installer.exe
+sample_Tcode_udp_capture.csv

@@ -10,6 +10,7 @@ public sealed class UdpMotionListener : IAsyncDisposable
     private const int ListenPort = 15601;
     private readonly ILogger<UdpMotionListener> _logger;
     private readonly AppState _appState;
+    private readonly IReadOnlyList<IUdpMotionParser> _parsers;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly Lock _statsLock = new();
     private readonly Queue<DateTimeOffset> _recentPacketTimes = new();
@@ -21,13 +22,15 @@ public sealed class UdpMotionListener : IAsyncDisposable
 
     public UdpMotionListener(
         ILogger<UdpMotionListener> logger,
-        AppState appState)
+        AppState appState,
+        IEnumerable<IUdpMotionParser> parsers)
     {
         _logger = logger;
         _appState = appState;
+        _parsers = parsers.ToArray();
     }
 
-    public event EventHandler<MotionSnapshot>? MotionReceived;
+    public event EventHandler<MotionFrame>? MotionReceived;
 
     public bool IsRunning => _listenTask is not null && !_listenTask.IsCompleted;
 
@@ -114,20 +117,22 @@ public sealed class UdpMotionListener : IAsyncDisposable
             {
                 var result = await client.ReceiveAsync(cancellationToken);
                 var receivedAt = DateTimeOffset.UtcNow;
-                if (!MotionSnapshot.TryParse(
+                if (!TryParseMotionFrame(
                     result.Buffer,
                     receivedAt,
-                    out var snapshot,
-                    out _,
+                    out var frame,
                     out var rejectionReason))
                 {
-                    var reason = rejectionReason ?? $"Rejected UDP packet with length {result.Buffer.Length}.";
-                    _appState.AddLog($"Ignored invalid UDP packet: {reason}");
+                    if (!string.IsNullOrWhiteSpace(rejectionReason))
+                    {
+                        _appState.AddLog($"Ignored invalid UDP packet: {rejectionReason}");
+                    }
+
                     continue;
                 }
 
-                RegisterReceivedPacket(snapshot.ReceivedAt);
-                MotionReceived?.Invoke(this, snapshot);
+                RegisterReceivedPacket(frame.ReceivedAt);
+                MotionReceived?.Invoke(this, frame);
             }
         }
         catch (OperationCanceledException)
@@ -143,6 +148,44 @@ public sealed class UdpMotionListener : IAsyncDisposable
             _appState.AddLog($"UDP listener error: {ex.Message}");
             _appState.SetListening(false, "Error");
         }
+    }
+
+    private bool TryParseMotionFrame(
+        ReadOnlySpan<byte> payload,
+        DateTimeOffset receivedAt,
+        out MotionFrame frame,
+        out string? rejectionReason)
+    {
+        var rejectionReasons = new List<string>();
+        var ignoredByRecognizedParser = false;
+
+        foreach (var parser in _parsers)
+        {
+            if (parser.TryParse(payload, receivedAt, out var parsedFrame, out var parserRejectionReason)
+                && parsedFrame is not null)
+            {
+                frame = parsedFrame;
+                rejectionReason = null;
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(parserRejectionReason))
+            {
+                rejectionReasons.Add(parserRejectionReason);
+            }
+            else
+            {
+                ignoredByRecognizedParser = true;
+            }
+        }
+
+        frame = null!;
+        rejectionReason = ignoredByRecognizedParser
+            ? null
+            : rejectionReasons.Count == 0
+                ? "No UDP motion parser accepted the payload."
+                : string.Join(" ", rejectionReasons.Distinct());
+        return false;
     }
 
     private async Task StatsLoopAsync(CancellationToken cancellationToken)

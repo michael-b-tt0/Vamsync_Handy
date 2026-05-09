@@ -10,7 +10,7 @@ public sealed record MotionPacketDecode(
     {
         byte? position = packet.Length >= 1 ? packet[0] : null;
         byte? speed = packet.Length >= 2 ? packet[1] : null;
-        float? duration = packet.Length >= MotionSnapshot.PacketLength
+        float? duration = packet.Length >= 6
             ? BitConverter.ToSingle(packet.Slice(2, 4))
             : null;
 

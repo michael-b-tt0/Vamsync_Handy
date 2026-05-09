@@ -26,7 +26,7 @@ public sealed class AppState
 
     public string DeviceInfo { get; private set; } = "Unknown";
 
-    public MotionSnapshot? LatestMotion { get; private set; }
+    public MotionFrame? LatestMotion { get; private set; }
 
     public int UdpPacketsPerSecond { get; private set; }
 
@@ -70,13 +70,18 @@ public sealed class AppState
 
     public void SetMappingStatus(string status)
     {
+        if (MappingStatus == status)
+        {
+            return;
+        }
+
         MappingStatus = status;
         NotifyChanged();
     }
 
-    public void SetLatestMotion(MotionSnapshot snapshot)
+    public void SetLatestMotion(MotionFrame frame)
     {
-        LatestMotion = snapshot;
+        LatestMotion = frame;
         NotifyChanged();
     }
 

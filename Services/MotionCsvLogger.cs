@@ -42,7 +42,7 @@ public sealed class MotionCsvLogger
     public string LogDirectory => _logDirectory;
 
     public async Task LogMovementSentAsync(
-        MotionSnapshot snapshot,
+        MotionFrame frame,
         double handyXp,
         double handyDurationMilliseconds,
         bool stopOnTarget,
@@ -55,23 +55,26 @@ public sealed class MotionCsvLogger
 
         var row = string.Join(",",
             Escape(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
-            Escape(snapshot.ReceivedAt.ToString("O", CultureInfo.InvariantCulture)),
-            snapshot.Position.ToString(CultureInfo.InvariantCulture),
-            snapshot.Speed.ToString(CultureInfo.InvariantCulture),
-            snapshot.DurationSeconds.ToString("F6", CultureInfo.InvariantCulture),
+            Escape(frame.ReceivedAt.ToString("O", CultureInfo.InvariantCulture)),
+            Escape(frame.SourceLabel),
+            Escape(frame.Axis),
+            frame.Position01.ToString("F6", CultureInfo.InvariantCulture),
+            frame.Speed01.ToString("F6", CultureInfo.InvariantCulture),
+            frame.SourceVelocity01PerSecond?.ToString("F6", CultureInfo.InvariantCulture) ?? string.Empty,
+            frame.DurationSeconds.ToString("F6", CultureInfo.InvariantCulture),
             handyXp.ToString("F5", CultureInfo.InvariantCulture),
             handyDurationMilliseconds.ToString("F3", CultureInfo.InvariantCulture),
             stopOnTarget ? "true" : "false");
 
         await AppendRowAsync(
             _movementFilePath,
-            "logged_at_utc,source_received_at_utc,source_position,source_speed,source_duration_seconds,handy_xp,handy_duration_ms,stop_on_target",
+            "logged_at_utc,source_received_at_utc,source,axis,source_position_01,source_speed_01,source_velocity_01_per_second,source_duration_seconds,handy_xp,handy_duration_ms,stop_on_target",
             row,
             cancellationToken);
     }
 
     public async Task LogMovementSuppressedAsync(
-        MotionSnapshot snapshot,
+        MotionFrame frame,
         double handyXp,
         double handyDurationMilliseconds,
         bool stopOnTarget,
@@ -85,10 +88,13 @@ public sealed class MotionCsvLogger
 
         var row = string.Join(",",
             Escape(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
-            Escape(snapshot.ReceivedAt.ToString("O", CultureInfo.InvariantCulture)),
-            snapshot.Position.ToString(CultureInfo.InvariantCulture),
-            snapshot.Speed.ToString(CultureInfo.InvariantCulture),
-            snapshot.DurationSeconds.ToString("F6", CultureInfo.InvariantCulture),
+            Escape(frame.ReceivedAt.ToString("O", CultureInfo.InvariantCulture)),
+            Escape(frame.SourceLabel),
+            Escape(frame.Axis),
+            frame.Position01.ToString("F6", CultureInfo.InvariantCulture),
+            frame.Speed01.ToString("F6", CultureInfo.InvariantCulture),
+            frame.SourceVelocity01PerSecond?.ToString("F6", CultureInfo.InvariantCulture) ?? string.Empty,
+            frame.DurationSeconds.ToString("F6", CultureInfo.InvariantCulture),
             handyXp.ToString("F5", CultureInfo.InvariantCulture),
             handyDurationMilliseconds.ToString("F3", CultureInfo.InvariantCulture),
             stopOnTarget ? "true" : "false",
@@ -96,7 +102,7 @@ public sealed class MotionCsvLogger
 
         await AppendRowAsync(
             _suppressedFilePath,
-            "logged_at_utc,source_received_at_utc,source_position,source_speed,source_duration_seconds,handy_xp,handy_duration_ms,stop_on_target,suppression_reason",
+            "logged_at_utc,source_received_at_utc,source,axis,source_position_01,source_speed_01,source_velocity_01_per_second,source_duration_seconds,handy_xp,handy_duration_ms,stop_on_target,suppression_reason",
             row,
             cancellationToken);
     }

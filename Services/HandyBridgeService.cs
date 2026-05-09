@@ -9,6 +9,9 @@ public sealed class HandyBridgeService : IAsyncDisposable
 {
     private const double AbsoluteMinimumDurationMilliseconds = 100d;
     private const double MaximumTravelUnitsPerSecond = 3.10d;
+    private const double TCodeOutputIntervalMilliseconds = 66d;
+    private const double TCodeSmoothingTimeConstantMilliseconds = 60d;
+    private const double TCodeOutputDeadband = 0.003d;
 
     private readonly IHandyService _handyService;
     private readonly UdpMotionListener _udpMotionListener;
@@ -16,11 +19,18 @@ public sealed class HandyBridgeService : IAsyncDisposable
     private readonly MotionCsvLogger _motionCsvLogger;
     private readonly ILogger<HandyBridgeService> _logger;
     private readonly Lock _motionStateLock = new();
+    private readonly Lock _tcodeStateLock = new();
 
     private bool _subscribed;
     private CancellationTokenSource? _connectionMonitorCts;
     private Task? _connectionMonitorTask;
+    private CancellationTokenSource? _tcodeOutputCts;
+    private Task? _tcodeOutputTask;
     private double? _lastHandyPosition;
+    private MotionFrame? _latestTCodeFrame;
+    private double? _smoothedTCodePosition;
+    private double? _lastSentTCodePosition;
+    private DateTimeOffset? _lastTCodeSmoothingUpdate;
 
     public HandyBridgeService(
         IHandyService handyService,
@@ -94,6 +104,8 @@ public sealed class HandyBridgeService : IAsyncDisposable
         {
             StartConnectionMonitor();
         }
+
+        StartTCodeOutputLoop();
         _appState.SetMappingStatus("Waiting for VaM motion");
         if (_motionCsvLogger.Enabled)
         {
@@ -104,22 +116,34 @@ public sealed class HandyBridgeService : IAsyncDisposable
     public async Task StopAsync()
     {
         await StopConnectionMonitorAsync();
+        await StopTCodeOutputLoopAsync();
         await _udpMotionListener.StopAsync();
         _appState.SetMappingStatus("Stopped");
         lock (_motionStateLock)
         {
             _lastHandyPosition = null;
         }
+
+        ResetTCodeState();
     }
 
-    private void OnMotionReceived(object? sender, MotionSnapshot snapshot)
+    private void OnMotionReceived(object? sender, MotionFrame frame)
     {
-        _ = DispatchMotionAsync(snapshot);
+        if (frame.Source == MotionFrameSource.TCodeV03)
+        {
+            StoreLatestTCodeFrame(frame);
+            return;
+        }
+
+        _ = DispatchMotionAsync(frame);
     }
 
-    private async Task HandleMotionAsync(MotionSnapshot snapshot)
+    private async Task HandleMotionAsync(
+        MotionFrame frame,
+        double? overridePosition01 = null,
+        double minimumRequestedDurationMilliseconds = 0d)
     {
-        _appState.SetLatestMotion(snapshot);
+        _appState.SetLatestMotion(frame);
 
         if (string.IsNullOrWhiteSpace(_appState.ConnectionKey))
         {
@@ -128,19 +152,19 @@ public sealed class HandyBridgeService : IAsyncDisposable
         }
 
         _appState.SetError(null);
-        var handyPosition = Math.Clamp(snapshot.Position / 99d, 0d, 1d);
-        var stopOnTarget = snapshot.Speed <= 2;
+        var handyPosition = Math.Clamp(overridePosition01 ?? frame.Position01, 0d, 1d);
+        var stopOnTarget = frame.Speed <= 2;
 
-        if (snapshot.DurationSeconds <= 0f)
+        if (frame.DurationSeconds <= 0f && minimumRequestedDurationMilliseconds <= 0d)
         {
             await _motionCsvLogger.LogMovementSuppressedAsync(
-                snapshot,
+                frame,
                 handyPosition,
                 0d,
                 stopOnTarget,
                 "Source duration is zero; packet was not forwarded to Handy.");
             _appState.SetMappingStatus(
-                $"Ignoring VaM motion with zero source duration: pos {handyPosition:P1}, speed {snapshot.Speed}");
+                $"Ignoring VaM motion with zero source duration: pos {handyPosition:P1}, speed {frame.Speed}");
             return;
         }
 
@@ -151,7 +175,11 @@ public sealed class HandyBridgeService : IAsyncDisposable
             _lastHandyPosition = handyPosition;
         }
 
-        var durationMilliseconds = ResolveDurationMilliseconds(snapshot, handyPosition, lastHandyPosition);
+        var durationMilliseconds = ResolveDurationMilliseconds(
+            frame,
+            handyPosition,
+            lastHandyPosition,
+            minimumRequestedDurationMilliseconds);
 
         await SendHdspXptWithLoggingAsync(
             handyPosition: handyPosition,
@@ -160,24 +188,28 @@ public sealed class HandyBridgeService : IAsyncDisposable
             immediateResponse: true);
 
         await _motionCsvLogger.LogMovementSentAsync(
-            snapshot,
+            frame,
             handyPosition,
             durationMilliseconds,
             stopOnTarget);
 
         _appState.SetMappingStatus(
-            $"Mapped VaM motion to Handy HDSP XPT: pos {handyPosition:P1}, duration {durationMilliseconds:F0}ms");
+            $"Mapped {frame.SourceLabel} {frame.Axis} to Handy HDSP XPT: pos {handyPosition:P1}, duration {durationMilliseconds:F0}ms");
     }
 
     private static double ResolveDurationMilliseconds(
-        MotionSnapshot snapshot,
+        MotionFrame frame,
         double handyPosition,
-        double? lastHandyPosition)
+        double? lastHandyPosition,
+        double minimumRequestedDurationMilliseconds)
     {
         var requestedDurationMilliseconds =
-            !float.IsFinite(snapshot.DurationSeconds) || snapshot.DurationSeconds <= 0f
+            !float.IsFinite(frame.DurationSeconds) || frame.DurationSeconds <= 0f
                 ? 0d
-                : snapshot.DurationSeconds * 1000d;
+                : frame.DurationSeconds * 1000d;
+        requestedDurationMilliseconds = Math.Max(
+            requestedDurationMilliseconds,
+            minimumRequestedDurationMilliseconds);
 
         var velocityLimitedMinimumDurationMilliseconds = 0d;
         if (lastHandyPosition is not null)
@@ -192,15 +224,18 @@ public sealed class HandyBridgeService : IAsyncDisposable
             Math.Max(requestedDurationMilliseconds, velocityLimitedMinimumDurationMilliseconds));
     }
 
-    private async Task DispatchMotionAsync(MotionSnapshot snapshot)
+    private async Task DispatchMotionAsync(
+        MotionFrame frame,
+        double? overridePosition01 = null,
+        double minimumRequestedDurationMilliseconds = 0d)
     {
         try
         {
-            await HandleMotionAsync(snapshot);
+            await HandleMotionAsync(frame, overridePosition01, minimumRequestedDurationMilliseconds);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to map motion snapshot to Handy commands.");
+            _logger.LogError(ex, "Failed to map motion frame to Handy commands.");
             await _motionCsvLogger.LogDeviceEventAsync(
                 "send-failed",
                 "Failed to send Handy HDSP XPT command.",
@@ -208,6 +243,133 @@ public sealed class HandyBridgeService : IAsyncDisposable
             UpdateHandyStatusFromSendFailure(ex);
             _appState.SetError(ex.Message);
             _appState.AddLog($"Motion mapping failed: {ex.Message}");
+        }
+    }
+
+    private void StoreLatestTCodeFrame(MotionFrame frame)
+    {
+        _appState.SetLatestMotion(frame);
+        lock (_tcodeStateLock)
+        {
+            _latestTCodeFrame = frame;
+        }
+    }
+
+    private void StartTCodeOutputLoop()
+    {
+        if (_tcodeOutputTask is not null && !_tcodeOutputTask.IsCompleted)
+        {
+            return;
+        }
+
+        _tcodeOutputCts?.Cancel();
+        _tcodeOutputCts?.Dispose();
+        _tcodeOutputCts = new CancellationTokenSource();
+        _tcodeOutputTask = TCodeOutputLoopAsync(_tcodeOutputCts.Token);
+    }
+
+    private async Task StopTCodeOutputLoopAsync()
+    {
+        var cts = _tcodeOutputCts;
+        var task = _tcodeOutputTask;
+
+        _tcodeOutputCts = null;
+        _tcodeOutputTask = null;
+
+        if (cts is null)
+        {
+            return;
+        }
+
+        cts.Cancel();
+        if (task is not null)
+        {
+            try
+            {
+                await task;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        cts.Dispose();
+    }
+
+    private async Task TCodeOutputLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(TCodeOutputIntervalMilliseconds));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            await DispatchLatestTCodeMotionAsync(DateTimeOffset.UtcNow);
+        }
+    }
+
+    private async Task DispatchLatestTCodeMotionAsync(DateTimeOffset now)
+    {
+        if (string.IsNullOrWhiteSpace(_appState.ConnectionKey))
+        {
+            _appState.SetMappingStatus("Waiting for Handy connection key");
+            return;
+        }
+
+        MotionFrame? frame;
+        double smoothedPosition;
+        bool shouldSend;
+
+        lock (_tcodeStateLock)
+        {
+            frame = _latestTCodeFrame;
+            if (frame is null)
+            {
+                return;
+            }
+
+            smoothedPosition = SmoothTCodePosition(frame.Position01, now);
+            shouldSend = _lastSentTCodePosition is null
+                || Math.Abs(smoothedPosition - _lastSentTCodePosition.Value) >= TCodeOutputDeadband;
+
+            if (shouldSend)
+            {
+                _lastSentTCodePosition = smoothedPosition;
+            }
+        }
+
+        if (!shouldSend)
+        {
+            return;
+        }
+
+        await DispatchMotionAsync(
+            frame,
+            overridePosition01: smoothedPosition,
+            minimumRequestedDurationMilliseconds: TCodeOutputIntervalMilliseconds);
+    }
+
+    private double SmoothTCodePosition(double latestPosition01, DateTimeOffset now)
+    {
+        if (_smoothedTCodePosition is null || _lastTCodeSmoothingUpdate is null)
+        {
+            _smoothedTCodePosition = latestPosition01;
+            _lastTCodeSmoothingUpdate = now;
+            return latestPosition01;
+        }
+
+        var elapsedMilliseconds = Math.Max(0d, (now - _lastTCodeSmoothingUpdate.Value).TotalMilliseconds);
+        var alpha = 1d - Math.Exp(-elapsedMilliseconds / TCodeSmoothingTimeConstantMilliseconds);
+        _smoothedTCodePosition += alpha * (latestPosition01 - _smoothedTCodePosition.Value);
+        _lastTCodeSmoothingUpdate = now;
+        return _smoothedTCodePosition.Value;
+    }
+
+    private void ResetTCodeState()
+    {
+        lock (_tcodeStateLock)
+        {
+            _latestTCodeFrame = null;
+            _smoothedTCodePosition = null;
+            _lastSentTCodePosition = null;
+            _lastTCodeSmoothingUpdate = null;
         }
     }
 

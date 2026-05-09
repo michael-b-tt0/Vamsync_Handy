@@ -50,6 +50,8 @@ namespace Vamsync
             builder.Services.AddSingleton<IHandyService, HandyService>();
             builder.Services.AddSingleton<AppState>();
             builder.Services.AddSingleton<MotionCsvLogger>();
+            builder.Services.AddSingleton<IUdpMotionParser, BinaryMotionPacketParser>();
+            builder.Services.AddSingleton<IUdpMotionParser, TCodeMotionParser>();
             builder.Services.AddSingleton<UdpMotionListener>();
             builder.Services.AddSingleton<HandyBridgeService>();
 

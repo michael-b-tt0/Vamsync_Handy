@@ -148,6 +148,10 @@
                     {
                         <div class="stat-grid">
                             <div class="stat-row">
+                                <span class="stat-label">Source</span>
+                                <span class="stat-value stat-mono">@motion.SourceLabel <span class="stat-unit">@motion.Axis</span></span>
+                            </div>
+                            <div class="stat-row">
                                 <span class="stat-label">Position</span>
                                 <span class="stat-value stat-mono">@motion.Position <span class="stat-unit">(@motion.Position01.ToString("P0"))</span></span>
                             </div>
@@ -155,6 +159,13 @@
                                 <span class="stat-label">Speed</span>
                                 <span class="stat-value stat-mono">@motion.Speed <span class="stat-unit">(@motion.Speed01.ToString("P0"))</span></span>
                             </div>
+                            @if (motion.SourceVelocity01PerSecond is { } velocity)
+                            {
+                                <div class="stat-row">
+                                    <span class="stat-label">Velocity</span>
+                                    <span class="stat-value stat-mono">@velocity.ToString("F3")<span class="stat-unit">/s</span></span>
+                                </div>
+                            }
                             <div class="stat-row">
                                 <span class="stat-label">Duration</span>
                                 <span class="stat-value stat-mono">@motion.DurationSeconds.ToString("F3")<span class="stat-unit">s</span></span>
