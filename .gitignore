@@ -8,3 +8,4 @@ installer/vamsync-installer.iss
 .gitignore
 releases/output/vamsync-installer.exe
 build-diag.log
+releases/output/vamsync-handy-installer.exe
