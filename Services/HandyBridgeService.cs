@@ -9,9 +9,10 @@ public sealed class HandyBridgeService : IAsyncDisposable
 {
     private const double AbsoluteMinimumDurationMilliseconds = 100d;
     private const double MaximumTravelUnitsPerSecond = 3.10d;
-    private const double TCodeOutputIntervalMilliseconds = 66d;
+    private const double TCodeOutputIntervalMilliseconds = 250d;
     private const double TCodeSmoothingTimeConstantMilliseconds = 60d;
     private const double TCodeOutputDeadband = 0.003d;
+    private const double TCodeStopOnTargetMinimumDelta = 0.010d;
 
     private readonly IHandyService _handyService;
     private readonly UdpMotionListener _udpMotionListener;
@@ -153,7 +154,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
 
         _appState.SetError(null);
         var handyPosition = Math.Clamp(overridePosition01 ?? frame.Position01, 0d, 1d);
-        var stopOnTarget = frame.Speed <= 2;
+        var suppressedStopOnTarget = frame.Source != MotionFrameSource.TCodeV03 && frame.Speed <= 2;
 
         if (frame.DurationSeconds <= 0f && minimumRequestedDurationMilliseconds <= 0d)
         {
@@ -161,7 +162,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
                 frame,
                 handyPosition,
                 0d,
-                stopOnTarget,
+                suppressedStopOnTarget,
                 "Source duration is zero; packet was not forwarded to Handy.");
             _appState.SetMappingStatus(
                 $"Ignoring VaM motion with zero source duration: pos {handyPosition:P1}, speed {frame.Speed}");
@@ -175,6 +176,7 @@ public sealed class HandyBridgeService : IAsyncDisposable
             _lastHandyPosition = handyPosition;
         }
 
+        var stopOnTarget = ResolveStopOnTarget(frame, handyPosition, lastHandyPosition);
         var durationMilliseconds = ResolveDurationMilliseconds(
             frame,
             handyPosition,
@@ -222,6 +224,25 @@ public sealed class HandyBridgeService : IAsyncDisposable
         return Math.Max(
             AbsoluteMinimumDurationMilliseconds,
             Math.Max(requestedDurationMilliseconds, velocityLimitedMinimumDurationMilliseconds));
+    }
+
+    private static bool ResolveStopOnTarget(
+        MotionFrame frame,
+        double handyPosition,
+        double? lastHandyPosition)
+    {
+        if (frame.Source != MotionFrameSource.TCodeV03)
+        {
+            return frame.Speed <= 2;
+        }
+
+        if (lastHandyPosition is null)
+        {
+            return false;
+        }
+
+        var positionDelta = Math.Abs(handyPosition - lastHandyPosition.Value);
+        return frame.Speed <= 2 && positionDelta >= TCodeStopOnTargetMinimumDelta;
     }
 
     private async Task DispatchMotionAsync(
