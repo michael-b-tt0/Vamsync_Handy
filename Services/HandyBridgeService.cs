@@ -8,7 +8,7 @@ namespace Vamsync.Services;
 public sealed class HandyBridgeService : IAsyncDisposable
 {
     private const double AbsoluteMinimumDurationMilliseconds = 100d;
-    private const double MaximumTravelUnitsPerSecond = 3.10d;
+    private const double MaximumTravelUnitsPerSecond = 3.00d;
     private const double TCodeOutputIntervalMilliseconds = 250d;
     private const double TCodeSmoothingTimeConstantMilliseconds = 60d;
     private const double TCodeOutputDeadband = 0.003d;

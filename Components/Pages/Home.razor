@@ -2,6 +2,7 @@
 @implements IDisposable
 @inject Vamsync.Services.AppState AppState
 @inject Vamsync.Services.HandyBridgeService Bridge
+@inject Vamsync.Services.UpdateCheckService UpdateChecker
 
 <PageTitle>VaMSync</PageTitle>
 
@@ -20,10 +21,41 @@
         <div class="header-badges">
             <FluentBadge Appearance="Appearance.Neutral"
                          class="version-badge">
-                v1.0
+                v@_currentVersion
             </FluentBadge>
+
+            @if (_isCheckingForUpdates)
+            {
+                <FluentBadge Appearance="Appearance.Neutral"
+                             class="update-status-badge">
+                    Checking updates...
+                </FluentBadge>
+            }
+            else if (_updateResult?.IsUpdateAvailable == true)
+            {
+                <FluentButton Appearance="Appearance.Accent"
+                              OnClick="DownloadUpdateAsync"
+                              Disabled="_openingUpdate"
+                              class="update-button">
+                    Update available: v@_updateResult.LatestVersion
+                </FluentButton>
+            }
         </div>
     </header>
+
+    @if (_updateResult?.IsUpdateAvailable == true)
+    {
+        <div class="update-banner">
+            <span class="update-banner-title">Update available</span>
+            <span>Version @_updateResult.LatestVersion is available. You're currently on v@_currentVersion.</span>
+            <FluentButton Appearance="Appearance.Accent"
+                          OnClick="DownloadUpdateAsync"
+                          Disabled="_openingUpdate"
+                          class="update-banner-button">
+                Download
+            </FluentButton>
+        </div>
+    }
 
     @* ── Top Row: Three Status Panels ────────────────── *@
     <FluentGrid Spacing="3" Justify="JustifyContent.FlexStart" Class="top-grid">
@@ -222,9 +254,13 @@
 
 @code {
     private bool _busy;
+    private bool _isCheckingForUpdates = true;
+    private bool _openingUpdate;
     private string _connectionKey = string.Empty;
+    private string _currentVersion = AppInfo.Current.VersionString;
+    private Vamsync.Services.UpdateCheckResult? _updateResult;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         _connectionKey = Preferences.Default.Get("handy_connection_key", AppState.ConnectionKey);
         if (!string.IsNullOrWhiteSpace(_connectionKey) && string.IsNullOrWhiteSpace(AppState.ConnectionKey))
@@ -233,6 +269,7 @@
         }
 
         AppState.Changed += OnAppStateChanged;
+        await CheckForUpdatesAsync();
     }
 
     private async Task VerifyConnectionAsync()
@@ -293,6 +330,36 @@
         finally
         {
             _busy = false;
+        }
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            _updateResult = await UpdateChecker.CheckForUpdateAsync();
+        }
+        finally
+        {
+            _isCheckingForUpdates = false;
+        }
+    }
+
+    private async Task DownloadUpdateAsync()
+    {
+        if (_updateResult is null)
+        {
+            return;
+        }
+
+        _openingUpdate = true;
+        try
+        {
+            await Launcher.Default.OpenAsync(new Uri(_updateResult.DownloadUrl));
+        }
+        finally
+        {
+            _openingUpdate = false;
         }
     }
 
