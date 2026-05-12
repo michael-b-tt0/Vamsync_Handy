@@ -1,6 +1,8 @@
 # VaMSync Handy
 
-VaMSync Handy is a Windows desktop app that acts as a drop in replacement for the VaMSync application for handy users. Instead of using the legacy bluetooth control with Buttplug.io, it uses the modern Handy API v3 via Handy Direct Streaming Protocol (HDSP) operations. This should mean much better device movement, connection speed, connectively and reliability with the existing VAMLaunch Plugin. The application also supports TCode(v0.3) movement data via UDP with the ToySerialController plugin, modified to work with the handy. Just configure the correct UDP ouput target along with ip and port inside the ToySerialController plugin for this to work.
+VaMSync Handy is a Windows desktop app that acts as a drop in replacement for the VaMSync application for handy users. Instead of using the legacy bluetooth control with Buttplug.io, it uses the modern Handy API v3 via Handy Direct Streaming Protocol (HDSP) operations. This should mean much better device movement, connection speed, connectively and reliability with the existing VAMLaunch Plugin. 
+
+This application also supports TCode(v0.3) movement data via UDP with the ToySerialController plugin, modified to work with the handy. Just configure the correct UDP ouput target along with ip and port inside the ToySerialController plugin for this to work.
 
 
 
@@ -15,7 +17,7 @@ VaMSync Handy is a Windows desktop app that acts as a drop in replacement for th
 - Converts incoming motion into Handy HDSP/XPT movement commands.
 - Supports UDP TCode-style motion updates as well as VamLaunch UDP motion.
 - Shows live status, latest motion, and an activity log from the handy.
-- In the event of a device error simply press the wifi button on the handy and it should reconnect automatically. 
+- In the event of a device error simply press the wifi button on the handy and it should reconnect   and receive new actions automatically. 
 - Checks GitHub Releases for app updates and can open the latest download page.
 
 ## Installation And Running
@@ -72,4 +74,10 @@ dotnet run --project Vamsync.csproj
 ## Notes
 
 - The app requires internet access because it communicates with Handy services and checks for updates.
-- If no GitHub releases have been published yet, the update checker stays quiet until a release exists.
+
+
+## Licence
+
+VaMSync Handy is distributed under the BSD 3-Clause License.
+
+[View Full Licence](docs/licence.md)
