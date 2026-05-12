@@ -70,4 +70,11 @@
         <Content Include="Components\**\*.razor.css" />
     </ItemGroup>
 
+    <Target Name="SyncAppIconForBlazorWebView" BeforeTargets="AssignTargetPaths">
+        <Copy
+            SourceFiles="Resources\AppIcon\handy_sync_logo.svg"
+            DestinationFiles="wwwroot\handy_sync_logo.svg"
+            SkipUnchangedFiles="true" />
+    </Target>
+
 </Project>

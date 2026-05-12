@@ -26,7 +26,7 @@ namespace Vamsync
                 return;
                 }
 
-            await DisplayAlert(
+            await DisplayAlertAsync(
                 "Internet connection required",
                 $"VaMSync needs an active internet connection to work. Current network state: {DescribeNetworkAccess(networkAccess)}.",
                 "OK");

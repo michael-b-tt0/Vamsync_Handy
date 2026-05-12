@@ -42,7 +42,10 @@
 }
 
 .title-icon {
-    font-size: 1.5rem;
+    width: 3rem;
+    height: 3rem;
+    object-fit: contain;
+    flex-shrink: 0;
     filter: drop-shadow(0 0 6px var(--vamsync-accent-glow));
 }
 
